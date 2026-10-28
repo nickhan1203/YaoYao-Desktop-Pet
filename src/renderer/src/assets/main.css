@@ -38,16 +38,3 @@ body {
 .pet-canvas:active {
   cursor: grabbing;
 }
-
-.app__label {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  margin: 0;
-  font-size: 30px;
-  font-weight: 600;
-  color: #4a3f35;
-  pointer-events: none;
-  text-shadow: 0 1px 3px rgb(255 255 255 / 45%);
-}

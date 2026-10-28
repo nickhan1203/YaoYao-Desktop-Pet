@@ -1,11 +1,10 @@
 import PetCanvas from './pet/PetCanvas'
-import { PLACEHOLDER_NOTE } from '../../shared/pet-config'
+import { PET_WINDOW_TITLE } from '../../shared/pet-config'
 
 function App(): React.JSX.Element {
   return (
-    <main className="app" aria-label={PLACEHOLDER_NOTE}>
+    <main className="app" aria-label={PET_WINDOW_TITLE}>
       <PetCanvas />
-      <span className="app__label">幺幺</span>
     </main>
   )
 }
