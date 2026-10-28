@@ -4,13 +4,16 @@
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
 
-/* 透明桌宠窗口：页面层级全部无默认边距、背景完全透明 */
+/* 透明桌宠窗口：页面层级全部无默认边距、背景完全透明；
+   桌宠窗口内容固定为视口尺寸，任何情况下不允许出现滚动条
+   （Windows 经典滚动条会占据窗口空间并破坏透明外观） */
 html,
 body {
   margin: 0;
   padding: 0;
   height: 100%;
   background: transparent;
+  overflow: hidden;
 }
 
 #root {
@@ -33,6 +36,13 @@ body {
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
+}
+
+/* PixiJS canvas 默认为 inline 元素，基线对齐会在画布下方产生几像素
+   空隙导致内容高度超出视口（Windows 经典滚动条因此可见）；
+   block 布局消除根因。 */
+.pet-canvas canvas {
+  display: block;
 }
 
 .pet-canvas:active {
