@@ -1,0 +1,23 @@
+---
+description: 幺幺桌宠项目总原则、任务节奏与双端验收底线
+alwaysApply: true
+enabled: true
+---
+
+# 项目目标
+构建 macOS 与 Windows 双端桌面宠物。主开发环境是 macOS Apple Silicon + CodeBuddy IDE；Windows 使用独立电脑实机验收。MVP 不接入 AI 对话、后端、数据库、遥测或云端同步。
+
+# 工作方式
+- 修改前阅读 `CODEBUDDY.md`、`docs/PRD.md`、`docs/ARCHITECTURE.md`、`docs/CROSS_PLATFORM_WORKFLOW.md` 与相关源码。
+- 一次只完成一个可验收任务；先说明目标、非目标、计划、文件范围和风险，再修改。
+- 以实际脚手架和 `package.json` 为准，不假设路径、脚本或测试已经存在。
+- 优先最小改动；不要顺带大规模重构或批量升级依赖。
+- 不声称运行了未实际执行的命令，不声称未实测的平台行为通过。
+- 完成后报告修改文件、命令与结果、Mac 实测情况、Windows 实测情况、未验证项和回滚方法。
+
+# 质量底线
+- TypeScript 保持严格类型；避免 `any`、`@ts-ignore`，除非说明原因。
+- 纯逻辑与 Electron 窗口/IPC 解耦，方便 Vitest 测试。
+- 不删除或弱化测试来掩盖错误。
+- 素材缺失时优雅降级。
+- 不提交原始宠物照片、密钥、`.env` 或个人隐私数据。

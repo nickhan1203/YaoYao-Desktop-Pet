@@ -1,0 +1,20 @@
+# Merge these entries into the project's existing .gitignore; do not overwrite existing rules blindly.
+node_modules/
+dist/
+out/
+release/
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.cer
+*.mobileprovision
+*.provisionprofile
+# Keep original/private pet photos outside the public repository.
+private-assets/
+original-photos/
+# Local app data and OS/editor noise
+.DS_Store
+Thumbs.db
+.codebuddy/settings.local.json

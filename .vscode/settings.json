@@ -1,0 +1,5 @@
+{
+    "yaml.schemas": {
+        "https://www.schemastore.org/github-workflow.json": "file:///Users/gaoruihan/Workspace/01_Development/Projects/Personal/yaoyao-desktop-pet/.github/workflows/ci.yml"
+    }
+}

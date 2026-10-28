@@ -1,0 +1,14 @@
+---
+description: Electron 主进程、preload、IPC 和平台窗口安全要求
+enabled: true
+---
+
+- `contextIsolation: true`，`nodeIntegration: false`。
+- 使用 preload 与 `contextBridge` 暴露最小化、显式、可类型化 API。
+- 不暴露 `ipcRenderer` 本身、任意 IPC 通道、任意文件系统或 shell 能力。
+- IPC handler 校验输入类型、范围和调用意图。
+- renderer 不直接访问 Node.js、文件系统或 shell。
+- 不创建全屏透明覆盖层；不因开发便利降低安全配置。
+- 外部链接、导航和权限按最小权限处理。
+- 不把密钥写进源码；不自动上传用户的幺幺照片。
+- 修改窗口行为后，分别列出 macOS 与 Windows 需要实测的项目。

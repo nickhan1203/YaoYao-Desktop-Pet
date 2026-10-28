@@ -1,0 +1,15 @@
+---
+description: 桌宠状态机、移动、动画和资源生命周期约定
+enabled: true
+---
+
+- 分离状态机、移动控制器、PixiJS 渲染和 Electron 窗口控制。
+- 推荐状态：`idle`、`walk`、`turn`、`sit`、`lie`、`drag`、`paused`。
+- `drag` 与 `paused` 优先于自动行为；拖动时自动移动必须冻结。
+- 移动速度使用像素/秒并按 delta time 推进。
+- 屏幕边界基于 Electron `screen` 的 workArea；不假设原点一定是 `(0, 0)`。
+- 考虑多显示器、负坐标、缩放比例、显示器增删与工作区变化。
+- 平台差异放在明确的 platform adapter 中，不在多个组件散落 OS 判断。
+- PixiJS ticker、事件监听器和临时资源必须按生命周期清理。
+- 缺少素材时显示占位符并输出可读错误。
+- 随机行为尽量注入随机源/时钟，以便测试可复现。
