@@ -1,5 +1,6 @@
 # Merge these entries into the project's existing .gitignore; do not overwrite existing rules blindly.
 node_modules/
+assets/
 dist/
 out/
 release/
