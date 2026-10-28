@@ -1,3 +1,5 @@
+import type { PetVisualState } from '../shared/pet-visual-state'
+
 declare global {
   interface Window {
     /** preload 通过 contextBridge 暴露的最小只读/受限 API */
@@ -8,6 +10,11 @@ declare global {
       dragStart: () => void
       /** 通知主进程拖动结束（松手/取消时调用一次） */
       dragEnd: () => void
+      /**
+       * 订阅视觉状态：立即回调一次当前状态，之后每次变化回调一次。
+       * 返回取消订阅函数（幂等）；载荷已通过结构校验。
+       */
+      subscribeVisualState: (callback: (state: PetVisualState) => void) => () => void
     }
   }
 }

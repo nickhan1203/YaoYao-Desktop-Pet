@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 // Electron sandbox renderer 禁用 eval：PixiJS 默认 shader 编译需要
 // unsafe-eval 支持，必须改用官方 CSP-safe 入口（不放松 sandbox）。
 import 'pixi.js/unsafe-eval'
@@ -9,6 +9,7 @@ import {
   PET_PLACEHOLDER_COLOR,
   PET_PLACEHOLDER_RADIUS
 } from '../../../shared/pet-config'
+import type { PetVisualState } from '../../../shared/pet-visual-state'
 import { usePetDrag } from './use-pet-drag'
 import idleAssetUrl from '../assets/pet/idle/idle-01.png'
 
@@ -33,9 +34,23 @@ function loadImageElement(url: string): Promise<HTMLImageElement> {
  * 按画布尺寸等比缩放（不拉伸变形）、中心锚点定位；
  * 图片加载失败时降级为占位圆形（素材缺失优雅降级），
  * 不影响窗口透明配置与既有行为系统；容器同时承载拖动交互（usePetDrag）。
+ *
+ * 视觉状态订阅：经 preload 窄接口接收主进程广播的当前状态与朝向，
+ * 本任务仅建立链路（data 属性可观察），动画接入留给后续任务；
+ * renderer 不实现任何行为决策或窗口移动逻辑。
  */
 function PetCanvas(): React.JSX.Element {
   const containerRef = usePetDrag()
+  const [visualState, setVisualState] = useState<PetVisualState | null>(null)
+
+  useEffect(() => {
+    const unsubscribe = window.yaoyao?.subscribeVisualState((state) => {
+      setVisualState(state)
+    })
+    return (): void => {
+      unsubscribe?.()
+    }
+  }, [])
 
   useEffect(() => {
     const container = containerRef.current
@@ -111,7 +126,14 @@ function PetCanvas(): React.JSX.Element {
     }
   }, [])
 
-  return <div ref={containerRef} className="pet-canvas" aria-label="幺幺画布" />
+  return (
+    <div
+      ref={containerRef}
+      className="pet-canvas"
+      aria-label="幺幺画布"
+      data-visual-state={visualState ? `${visualState.kind}:${visualState.facing}` : undefined}
+    />
+  )
 }
 
 export default PetCanvas

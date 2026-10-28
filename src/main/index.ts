@@ -4,7 +4,11 @@ import { createPetWindow } from './pet-window'
 import { registerPetIpcHandlers } from './ipc-handlers'
 import { PetBehaviorRuntime, type RuntimeWindow } from './pet-behavior-runtime'
 import { PET_WINDOW_HEIGHT, PET_WINDOW_WIDTH } from '../shared/pet-config'
+import type { PetVisualState } from '../shared/pet-visual-state'
 import type { MovementBounds } from '../shared/movement-controller'
+
+/** 视觉状态广播通道（主进程 → renderer 单向，载荷为 PetVisualState） */
+const VISUAL_STATE_CHANNEL = 'pet:visual-state-changed'
 
 // 将主进程未捕获异常输出为可读日志，便于定位问题（替代默认的系统弹窗）。
 process.on('uncaughtException', (error) => {
@@ -17,6 +21,23 @@ process.on('unhandledRejection', (reason) => {
 let petWindow: BrowserWindow | null = null
 let behaviorRuntime: PetBehaviorRuntime | null = null
 
+/**
+ * 创建行为运行时：视觉状态变化时向 renderer 广播（单向），
+ * 窗口销毁/renderer 不存在时不发送（isDestroyed 防御，不抛异常）。
+ */
+function createBehaviorRuntime(): PetBehaviorRuntime {
+  return new PetBehaviorRuntime({
+    window: createRuntimeWindow(),
+    getBounds: getWalkBounds,
+    onVisualStateChange: (state: PetVisualState): void => {
+      const win = petWindow
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(VISUAL_STATE_CHANNEL, state)
+      }
+    }
+  })
+}
+
 /** 窗口适配器：把 BrowserWindow 的位置能力收敛为运行时所需的最小接口 */
 function createRuntimeWindow(): RuntimeWindow {
   return {
@@ -26,7 +47,7 @@ function createRuntimeWindow(): RuntimeWindow {
       const [x, y] = petWindow?.getPosition() ?? [0, 0]
       return { x, y }
     },
-    setPosition: (x, y): void => {
+    setPosition: (x: number, y: number): void => {
       petWindow?.setPosition(x, y, false)
     },
     isDestroyed: (): boolean => !petWindow || petWindow.isDestroyed()
@@ -69,16 +90,16 @@ app.whenReady().then(() => {
 
   petWindow = createPetWindow()
 
-  behaviorRuntime = new PetBehaviorRuntime({
-    window: createRuntimeWindow(),
-    getBounds: getWalkBounds
-  })
+  behaviorRuntime = createBehaviorRuntime()
 
   registerPetIpcHandlers(
     () => petWindow,
     {
       onDragStart: () => behaviorRuntime?.handleDragStart(),
       onDragEnd: () => behaviorRuntime?.handleDragEnd()
+    },
+    {
+      getVisualState: (): PetVisualState | null => behaviorRuntime?.currentVisualState ?? null
     }
   )
 
@@ -104,10 +125,7 @@ app.whenReady().then(() => {
       if (behaviorRuntime) {
         behaviorRuntime.stop()
       }
-      behaviorRuntime = new PetBehaviorRuntime({
-        window: createRuntimeWindow(),
-        getBounds: getWalkBounds
-      })
+      behaviorRuntime = createBehaviorRuntime()
       behaviorRuntime.start()
     }
   })

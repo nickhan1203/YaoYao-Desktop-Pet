@@ -48,6 +48,7 @@ import {
   type RandomSource
 } from '../shared/pet-behavior-decider'
 import { PET_WALK_SPEED_PX_PER_SEC } from '../shared/pet-config'
+import { toPetFacing, type PetVisualState } from '../shared/pet-visual-state'
 
 /** 运行时需要的窗口能力（测试可注入假实现） */
 export interface RuntimeWindow {
@@ -77,6 +78,8 @@ export interface RuntimeDeps {
   random?: RandomSource
   scheduler?: Scheduler
   config?: RuntimeConfig
+  /** 视觉状态变化回调（主进程接线层用于向 renderer 广播；可选） */
+  onVisualStateChange?: (state: PetVisualState) => void
 }
 
 const DEFAULT_TICK_INTERVAL_MS = 50
@@ -149,6 +152,10 @@ export class PetBehaviorRuntime {
   private cancelLoop: (() => void) | null = null
   private lastTickMs: number | null = null
   private running = false
+  /** 视觉状态变化回调（可选注入；不改变行为逻辑，只做变化通知） */
+  private readonly onVisualStateChange?: (state: PetVisualState) => void
+  /** 上次已广播的视觉状态：仅 (kind, facing) 变化时才再次广播 */
+  private lastBroadcastVisualState: PetVisualState | null = null
 
   constructor(deps: RuntimeDeps) {
     this.win = deps.window
@@ -160,6 +167,7 @@ export class PetBehaviorRuntime {
     this.deciderConfig = config.decider ?? DEFAULT_BEHAVIOR_DECIDER_CONFIG
     this.walkSpeedPxPerSec = config.walkSpeedPxPerSec ?? PET_WALK_SPEED_PX_PER_SEC
     this.tickIntervalMs = config.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS
+    this.onVisualStateChange = deps.onVisualStateChange
   }
 
   /** 启动运行循环（幂等：重复调用不会创建多个循环） */
@@ -173,6 +181,9 @@ export class PetBehaviorRuntime {
     // 启动后进入合理的待机阶段：采样待机目标时长
     this.targetDurationSec = this.sampleTargetFor(this.state)
     this.lastTickMs = this.clock()
+    // 广播初始视觉状态（renderer 可在任意时刻订阅并通过查询接口获取，
+    // 不依赖恰好监听到启动后的第一条广播）。
+    this.broadcastVisualState()
     this.cancelLoop = this.scheduler(() => this.tick(), this.tickIntervalMs)
   }
 
@@ -194,20 +205,28 @@ export class PetBehaviorRuntime {
     return this.state
   }
 
+  /** 当前视觉状态（行为状态 + 朝向），供接线层响应查询请求 */
+  get currentVisualState(): PetVisualState {
+    return { kind: this.state.kind, facing: toPetFacing(this.walkDirection) }
+  }
+
   /** 暂停自动行为（供后续托盘/菜单集成使用） */
   pause(): void {
     this.state = transition(this.state, { type: 'PAUSE' })
+    this.broadcastVisualState()
   }
 
   /** 继续自动行为（从暂停前的行为恢复，已持续时间冻结保持） */
   resume(): void {
     this.state = transition(this.state, { type: 'RESUME' })
+    this.broadcastVisualState()
   }
 
   /** 拖动开始：立即停止自动位置推进，清除触界标记与旧行为基准 */
   handleDragStart(): void {
     this.state = transition(this.state, { type: 'DRAG_START' })
     this.currentHit = null
+    this.broadcastVisualState()
   }
 
   /**
@@ -220,6 +239,21 @@ export class PetBehaviorRuntime {
     this.behaviorElapsedSec = 0
     this.currentHit = null
     this.targetDurationSec = this.sampleTargetFor(this.state)
+    this.broadcastVisualState()
+  }
+
+  /**
+   * 广播视觉状态：仅当 (kind, facing) 与上次不同（或首次）时回调一次，
+   * 避免每个 tick 重复发送相同状态。
+   */
+  private broadcastVisualState(): void {
+    const next = this.currentVisualState
+    const last = this.lastBroadcastVisualState
+    if (last && last.kind === next.kind && last.facing === next.facing) {
+      return
+    }
+    this.lastBroadcastVisualState = next
+    this.onVisualStateChange?.(next)
   }
 
   /**
@@ -312,6 +346,8 @@ export class PetBehaviorRuntime {
     } else if (decision.type === 'startTurning' || decision.type === 'startIdle') {
       this.targetDurationSec = decision.durationSec
     }
+    // 行为阶段（或行走方向）发生变化后广播视觉状态。
+    this.broadcastVisualState()
   }
 
   /** 按当前状态采样目标时长（阶段转换/恢复时调用，不在每个 tick 重复采样） */

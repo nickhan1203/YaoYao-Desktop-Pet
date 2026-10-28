@@ -1,8 +1,11 @@
 import { ipcMain, screen, type BrowserWindow } from 'electron'
 import { clampWindowToDisplays, type Rect } from './display-clamp'
+import { isPetVisualState, type PetVisualState } from '../shared/pet-visual-state'
 
 const DRAG_START_CHANNEL = 'pet:drag-start'
 const DRAG_END_CHANNEL = 'pet:drag-end'
+/** 视觉状态查询通道：renderer 订阅时获取当前状态（一次性 invoke） */
+const GET_VISUAL_STATE_CHANNEL = 'pet:get-visual-state'
 
 /** 拖动跟随的轮询间隔（约 60fps） */
 const DRAG_POLL_INTERVAL_MS = 16
@@ -18,6 +21,12 @@ interface DragState {
 export interface DragCallbacks {
   onDragStart?: () => void
   onDragEnd?: () => void
+}
+
+/** 视觉状态相关注册选项 */
+export interface VisualStateHandlers {
+  /** 返回当前视觉状态（来自行为运行时的权威快照）；未提供时不注册查询通道 */
+  getVisualState?: () => PetVisualState | null
 }
 
 /**
@@ -39,9 +48,20 @@ export interface DragCallbacks {
  */
 export function registerPetIpcHandlers(
   getPetWindow: () => BrowserWindow | null,
-  callbacks: DragCallbacks = {}
+  callbacks: DragCallbacks = {},
+  visualStateHandlers: VisualStateHandlers = {}
 ): void {
   let dragState: DragState | null = null
+
+  // 视觉状态查询：renderer 订阅时获取当前状态，不依赖监听到第一条广播。
+  // 载荷经 isPetVisualState 校验后才返回，null 表示运行时尚未启动。
+  if (visualStateHandlers.getVisualState) {
+    const getVisualState = visualStateHandlers.getVisualState
+    ipcMain.handle(GET_VISUAL_STATE_CHANNEL, (): PetVisualState | null => {
+      const state = getVisualState()
+      return isPetVisualState(state) ? state : null
+    })
+  }
 
   const stopDrag = (): void => {
     if (dragState) {
