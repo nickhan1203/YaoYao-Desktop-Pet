@@ -1,15 +1,17 @@
 /**
  * 幺幺桌宠共享常量（main 与 renderer 共用，纯逻辑、可被 Vitest 直接测试）。
  */
-export const PET_WINDOW_WIDTH = 320
-export const PET_WINDOW_HEIGHT = 420
-export const PET_WINDOW_MIN_WIDTH = 240
-export const PET_WINDOW_MIN_HEIGHT = 320
+export const PET_WINDOW_WIDTH = 240
+export const PET_WINDOW_HEIGHT = 240
+export const PET_WINDOW_MIN_WIDTH = 180
+export const PET_WINDOW_MIN_HEIGHT = 180
 export const PET_WINDOW_TITLE = '幺幺桌宠'
+
+/** 窗口初始位置距离屏幕工作区右下角的留白（CSS px） */
+export const PET_WINDOW_POSITION_MARGIN = 80
 
 export const PET_CANVAS_WIDTH = 240
 export const PET_CANVAS_HEIGHT = 240
-export const PET_CANVAS_BACKGROUND = '#f6f1e7'
 export const PET_PLACEHOLDER_RADIUS = 64
 export const PET_PLACEHOLDER_COLOR = 0xe8b04b
 

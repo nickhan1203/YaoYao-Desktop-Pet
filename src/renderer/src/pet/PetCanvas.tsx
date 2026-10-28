@@ -1,20 +1,21 @@
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import { Application, Graphics } from 'pixi.js'
 import {
-  PET_CANVAS_BACKGROUND,
   PET_CANVAS_HEIGHT,
   PET_CANVAS_WIDTH,
   PET_PLACEHOLDER_COLOR,
   PET_PLACEHOLDER_RADIUS
 } from '../../../shared/pet-config'
+import { usePetDrag } from './use-pet-drag'
 
 /**
  * 幺幺桌宠画布容器（Task 6 动画系统的扩展点）。
  * 当前仅做最小 PixiJS Application 挂载与占位圆形，
- * 验证 PixiJS 依赖集成与资源生命周期清理。
+ * 验证 PixiJS 依赖集成与资源生命周期清理；
+ * 容器同时承载拖动交互（usePetDrag）。
  */
 function PetCanvas(): React.JSX.Element {
-  const containerRef = useRef<HTMLDivElement | null>(null)
+  const containerRef = usePetDrag()
 
   useEffect(() => {
     const container = containerRef.current
@@ -30,7 +31,8 @@ function PetCanvas(): React.JSX.Element {
       .init({
         width: PET_CANVAS_WIDTH,
         height: PET_CANVAS_HEIGHT,
-        background: PET_CANVAS_BACKGROUND,
+        // 画布背景完全透明，与透明窗口配合；否则画布底色会覆盖窗口透明效果。
+        backgroundAlpha: 0,
         antialias: true
       })
       .then(() => {

@@ -1,6 +1,17 @@
 import { app, BrowserWindow } from 'electron'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { createPetWindow } from './pet-window'
+import { registerPetIpcHandlers } from './ipc-handlers'
+
+// 将主进程未捕获异常输出为可读日志，便于定位问题（替代默认的系统弹窗）。
+process.on('uncaughtException', (error) => {
+  console.error('[main] uncaughtException:', error)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandledRejection:', reason)
+})
+
+let petWindow: BrowserWindow | null = null
 
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
@@ -15,13 +26,14 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  createPetWindow()
+  petWindow = createPetWindow()
+  registerPetIpcHandlers(() => petWindow)
 
   app.on('activate', () => {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) {
-      createPetWindow()
+      petWindow = createPetWindow()
     }
   })
 })

@@ -1,21 +1,45 @@
-import { BrowserWindow, shell } from 'electron'
+import { BrowserWindow, screen, shell } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import {
   PET_WINDOW_HEIGHT,
   PET_WINDOW_MIN_HEIGHT,
   PET_WINDOW_MIN_WIDTH,
+  PET_WINDOW_POSITION_MARGIN,
   PET_WINDOW_TITLE,
   PET_WINDOW_WIDTH
 } from '../shared/pet-config'
 
 /**
- * 创建幺幺桌宠窗口。
+ * 计算窗口初始位置：停靠在主显示器工作区右下角并留出边距，
+ * 避免默认出现在屏幕中央遮挡主要工作区域。
+ * 基于 workArea 计算，可兼容 Dock/任务栏与负坐标显示器。
+ */
+function computeInitialPosition(): { x: number; y: number } {
+  const { workArea } = screen.getPrimaryDisplay()
+  return {
+    x: workArea.x + workArea.width - PET_WINDOW_WIDTH - PET_WINDOW_POSITION_MARGIN,
+    y: workArea.y + workArea.height - PET_WINDOW_HEIGHT - PET_WINDOW_POSITION_MARGIN
+  }
+}
+
+/**
+ * 创建幺幺桌宠透明无边框窗口。
  * 安全基线：contextIsolation 开启、nodeIntegration 关闭、sandbox 开启，
  * renderer 只能通过 preload 暴露的最小只读 API 访问受限信息。
+ *
+ * 窗口说明：
+ * - frame: false + transparent: true 实现无边框透明桌宠外观；
+ * - hasShadow: false 避免 macOS 在透明窗口内容周围绘制阴影；
+ * - alwaysOnTop 暂不启用（保守默认值，待托盘/菜单任务中双端实测后再定层级）；
+ * - resizable: false 桌宠窗口不需要用户手动调整尺寸。
  */
 export function createPetWindow(): BrowserWindow {
+  const { x, y } = computeInitialPosition()
+
   const petWindow = new BrowserWindow({
+    x,
+    y,
     width: PET_WINDOW_WIDTH,
     height: PET_WINDOW_HEIGHT,
     minWidth: PET_WINDOW_MIN_WIDTH,
@@ -23,6 +47,11 @@ export function createPetWindow(): BrowserWindow {
     title: PET_WINDOW_TITLE,
     show: false,
     autoHideMenuBar: true,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    resizable: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
