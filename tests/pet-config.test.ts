@@ -3,6 +3,7 @@ import {
   PET_CANVAS_HEIGHT,
   PET_CANVAS_WIDTH,
   PET_PLACEHOLDER_RADIUS,
+  PET_WALK_SPEED_PX_PER_SEC,
   PET_WINDOW_HEIGHT,
   PET_WINDOW_MIN_HEIGHT,
   PET_WINDOW_MIN_WIDTH,
@@ -37,5 +38,10 @@ describe('pet-config 共享常量', () => {
   it('占位圆形半径在画布范围内', () => {
     expect(PET_PLACEHOLDER_RADIUS).toBeGreaterThan(0)
     expect(isPlaceholderRadiusWithinCanvas()).toBe(true)
+  })
+
+  it('行走速度为正数（像素/秒）', () => {
+    expect(PET_WALK_SPEED_PX_PER_SEC).toBeGreaterThan(0)
+    expect(Number.isFinite(PET_WALK_SPEED_PX_PER_SEC)).toBe(true)
   })
 })

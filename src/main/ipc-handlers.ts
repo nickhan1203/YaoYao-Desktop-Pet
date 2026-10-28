@@ -14,6 +14,12 @@ interface DragState {
   pollTimer: ReturnType<typeof setInterval>
 }
 
+/** 拖动生命周期回调（供行为运行时协调自动行为） */
+export interface DragCallbacks {
+  onDragStart?: () => void
+  onDragEnd?: () => void
+}
+
 /**
  * 注册桌宠拖动相关的 IPC handler。
  *
@@ -27,8 +33,14 @@ interface DragState {
  * - 无高频 IPC（拖动期间 renderer 不发任何消息）；
  * - 主进程坐标系，不受 renderer 屏幕坐标跨显示器/混合 DPI 跳变影响；
  * - 边界约束"吃掉"的位移在约束解除后自动恢复，鼠标与窗口不会跑偏。
+ *
+ * onDragStart / onDragEnd 在拖动开始/结束时通知行为运行时，
+ * 使自动移动在拖动期间立即停止、结束后从真实位置恢复。
  */
-export function registerPetIpcHandlers(getPetWindow: () => BrowserWindow | null): void {
+export function registerPetIpcHandlers(
+  getPetWindow: () => BrowserWindow | null,
+  callbacks: DragCallbacks = {}
+): void {
   let dragState: DragState | null = null
 
   const stopDrag = (): void => {
@@ -77,9 +89,11 @@ export function registerPetIpcHandlers(getPetWindow: () => BrowserWindow | null)
     }, DRAG_POLL_INTERVAL_MS)
 
     dragState = { anchorX, anchorY, pollTimer }
+    callbacks.onDragStart?.()
   })
 
   ipcMain.on(DRAG_END_CHANNEL, () => {
     stopDrag()
+    callbacks.onDragEnd?.()
   })
 }

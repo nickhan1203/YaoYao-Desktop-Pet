@@ -15,6 +15,9 @@ export const PET_CANVAS_HEIGHT = 240
 export const PET_PLACEHOLDER_RADIUS = 64
 export const PET_PLACEHOLDER_COLOR = 0xe8b04b
 
+/** 自动行走的默认速度（CSS px / 秒）：缓慢踱步，低干扰 */
+export const PET_WALK_SPEED_PX_PER_SEC = 60
+
 export const PLACEHOLDER_NOTE = '占位界面：透明窗口与动画将在后续任务实现'
 
 /** 校验占位圆形是否始终在画布范围内。 */
