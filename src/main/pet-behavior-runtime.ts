@@ -18,6 +18,11 @@
  *   状态机不允许 turning → walking 直接跳转，先结束转向回到待机再开始行走）
  * - 拖动开始/结束 → DRAG_START / DRAG_END（由 ipc-handlers 回调触发）
  *
+ * Task 11D（水平行走）：自动行走只允许左右方向（决策器候选已收敛），
+ * 行走方向进入运行时统一做水平规范化（防御历史 up/down 数据）；
+ * 触达左右边界触发的转向会记录相反方向，恢复行走时覆盖随机选向；
+ * 用户拖动不受限，松开后的窗口 Y 成为新的水平行走轨道。
+ *
  * 活动范围：由 getBounds() 注入（实现使用 Electron screen 的 workArea，
  * 宠物中心所在显示器），与 display-clamp 的"窗口可见性"语义不同，
  * 不复用其 40px 可见约束。
@@ -127,6 +132,25 @@ function decisionToEvent(decision: BehaviorDecision, state: PetState): PetEvent 
   }
 }
 
+/**
+ * 把任意方向规范化为水平单位向量（左/右）。
+ * x > 0 → 右；x < 0 → 左；垂直/零/非法向量 → 回退方向（同样规范化，
+ * 回退自身非法时取右）。Task 11D：自动行走只允许水平移动，
+ * 历史 up/down 方向不得引起垂直自动移动（防御性兼容）。
+ */
+export function normalizeHorizontalDirection(direction: Vec2, fallback: Vec2): Vec2 {
+  if (Number.isFinite(direction.x) && direction.x > 0) {
+    return { x: 1, y: 0 }
+  }
+  if (Number.isFinite(direction.x) && direction.x < 0) {
+    return { x: -1, y: 0 }
+  }
+  if (Number.isFinite(fallback.x) && fallback.x < 0) {
+    return { x: -1, y: 0 }
+  }
+  return { x: 1, y: 0 }
+}
+
 export class PetBehaviorRuntime {
   private readonly win: RuntimeWindow
   private readonly getBounds: () => MovementBounds
@@ -149,6 +173,14 @@ export class PetBehaviorRuntime {
   private lastSentPosition: Vec2 = { x: 0, y: 0 }
   /** 当前行走触界信息：仅 walking 阶段有效，离开 walking 立即清除 */
   private currentHit: BoundsHit | null = null
+  /**
+   * 边界转向后的待恢复方向（Task 11D）：
+   * 触达左右边界触发的 turning 记录相反水平方向，
+   * 转向结束恢复行走时优先使用（覆盖随机选向），
+   * 保证"到达边界 → 转向 → 反方向恢复行走"不被随机方向破坏。
+   * 其他来源的 startWalking（待机后/拖动后）不受影响。
+   */
+  private pendingTurnDirection: Vec2 | null = null
   private cancelLoop: (() => void) | null = null
   private lastTickMs: number | null = null
   private running = false
@@ -226,18 +258,22 @@ export class PetBehaviorRuntime {
   handleDragStart(): void {
     this.state = transition(this.state, { type: 'DRAG_START' })
     this.currentHit = null
+    this.pendingTurnDirection = null
     this.broadcastVisualState()
   }
 
   /**
    * 拖动结束：以窗口真实位置为新基准（防止跳回拖动前位置），
    * 重置已持续时间并重新采样目标时长（防止过期时长立即触发连续转换）。
+   * 拖动后的窗口 Y 成为新的水平行走轨道（不强制回到初始 Y），
+   * 后续自动行走只改变 X；若 Y 越出边界，由行走计算的钳制逐步纠正。
    */
   handleDragEnd(): void {
     this.state = transition(this.state, { type: 'DRAG_END' })
     this.syncPositionFromWindow()
     this.behaviorElapsedSec = 0
     this.currentHit = null
+    this.pendingTurnDirection = null
     this.targetDurationSec = this.sampleTargetFor(this.state)
     this.broadcastVisualState()
   }
@@ -341,9 +377,28 @@ export class PetBehaviorRuntime {
     this.state = next
     this.behaviorElapsedSec = 0
     if (decision.type === 'startWalking') {
-      this.walkDirection = decision.direction
+      // Task 11D：边界转向后的恢复行走使用相反水平方向（覆盖随机选向），
+      // 其余来源的行走方向做水平规范化（防御历史 up/down 决策数据）。
+      if (this.pendingTurnDirection !== null) {
+        this.walkDirection = this.pendingTurnDirection
+        this.pendingTurnDirection = null
+      } else {
+        this.walkDirection = normalizeHorizontalDirection(decision.direction, this.walkDirection)
+      }
       this.targetDurationSec = decision.durationSec
-    } else if (decision.type === 'startTurning' || decision.type === 'startIdle') {
+    } else if (decision.type === 'startTurning') {
+      // 边界触发的转向（directionalHit 已过滤为方向一致的水平触界）：
+      // 记录相反方向，供转向结束后恢复行走时使用。
+      if (this.currentHit !== null && (this.currentHit.left || this.currentHit.right)) {
+        this.pendingTurnDirection = normalizeHorizontalDirection(
+          { x: -this.walkDirection.x, y: 0 },
+          { x: 1, y: 0 }
+        )
+      }
+      this.targetDurationSec = decision.durationSec
+    } else if (decision.type === 'startIdle') {
+      // startIdle：边界转向序列被待机打断，待恢复方向不再有效。
+      this.pendingTurnDirection = null
       this.targetDurationSec = decision.durationSec
     }
     // 行为阶段（或行走方向）发生变化后广播视觉状态。

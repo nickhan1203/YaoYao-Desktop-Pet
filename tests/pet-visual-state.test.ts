@@ -147,7 +147,7 @@ describe('PetBehaviorRuntime 视觉状态广播', () => {
   })
 
   it('待机切换到行走时广播 walking 与正确朝向', () => {
-    // 脚本：初始行走方向向下（random 0.5 → index 2）
+    // Task 11D 后方向候选仅水平双向：random 0.5 → index 1 → 向左
     const h = makeRuntime({ random: scriptedRandom([0.5]) })
     h.runtime.start()
     // 待机 1s 到期（浮点累加下 1.1s 触发）
@@ -155,7 +155,7 @@ describe('PetBehaviorRuntime 视觉状态广播', () => {
       h.tick(t)
     }
     expect(h.runtime.currentState.kind).toBe('walking')
-    expect(h.broadcasts[h.broadcasts.length - 1]).toEqual({ kind: 'walking', facing: 'down' })
+    expect(h.broadcasts[h.broadcasts.length - 1]).toEqual({ kind: 'walking', facing: 'left' })
   })
 
   it('行走方向切换时朝向正确更新', () => {

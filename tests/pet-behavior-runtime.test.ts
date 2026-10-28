@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   PetBehaviorRuntime,
+  normalizeHorizontalDirection,
   type RuntimeWindow,
   type Scheduler
 } from '../src/main/pet-behavior-runtime'
@@ -232,7 +233,7 @@ describe('边界与转向', () => {
     // 随机消耗顺序（时长范围 min==max 时不消耗随机数）：
     // 1. 待机到期选方向（0 → 向右，走到边界触发转向）
     // 2. 转向到期分流（0 < ratio=1 → 恢复行走）
-    // 3. 恢复行走的方向（0.5 → 向下，避免再次触界）
+    // 3. 恢复行走的随机选向（0.5 → 向左）会被 Task 11D 的边界反向覆盖（同为向左）
     const win = new FakeWindow(1670, 100)
     const h = makeRuntime({ window: win, random: scriptedRandom([0, 0, 0.5]) })
     h.runtime.start()
@@ -268,9 +269,9 @@ describe('边界与转向', () => {
     // 随机消耗顺序（时长范围 min==max 时不消耗随机数）：
     // 1. 待机到期选方向（0 → 向右，走到边界触发转向）
     // 2. 转向到期分流（0 < ratio=1 → 恢复行走）
-    // 3. 恢复行走的方向（0.5 → 向下）
+    // 3. 恢复行走的随机选向（0.5 → 向左）与 Task 11D 边界反向（向左）一致。
     // 若旧触界残留，转向结束后会立刻再次进入转向；
-    // 正确行为是恢复后沿新方向持续向下行走。
+    // 正确行为是恢复后沿反方向（向左）持续水平行走。
     const win = new FakeWindow(1670, 100)
     const h = makeRuntime({ window: win, random: scriptedRandom([0, 0, 0.5]) })
     h.runtime.start()
@@ -282,14 +283,14 @@ describe('边界与转向', () => {
       h.tick(t)
     }
     expect(h.runtime.currentState.kind).toBe('walking')
-    // 持续行走若干 tick：位置向下推进，不再触发转向
+    // 持续行走若干 tick：位置向左推进（X 离开右边界），Y 不变，不再触发转向
     for (let t = 2200; t <= 3000; t += 100) {
       h.tick(t)
     }
     expect(h.runtime.currentState.kind).toBe('walking')
     const last = h.win.setPositionCalls[h.win.setPositionCalls.length - 1]
-    expect(last.y).toBeGreaterThan(100)
-    expect(last.x).toBe(1680)
+    expect(last.y).toBe(100)
+    expect(last.x).toBeLessThan(1680)
   })
 })
 
@@ -426,5 +427,227 @@ describe('时间与采样稳定性', () => {
     // 浮点累加 0.1×10 = 0.999…，实际在 1.1s 到期
     h.tick(1100)
     expect(randomCalls).toBe(3)
+  })
+})
+
+describe('Task 11D：水平行走', () => {
+  it('向右自动行走：X 增加，Y 保持不变（facing=right）', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    expect(h.runtime.currentVisualState.facing).toBe('right')
+    for (let t = 1300; t <= 3000; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('walking')
+    const last = h.win.setPositionCalls[h.win.setPositionCalls.length - 1]
+    expect(last.x).toBeGreaterThan(100)
+    expect(last.y).toBe(100)
+  })
+
+  it('向左自动行走：X 减少，Y 保持不变（facing=left）', () => {
+    const win = new FakeWindow(1000, 200)
+    // random 0.5 → 方向索引 1 → 向左
+    const h = makeRuntime({ window: win, random: scriptedRandom([0.5]) })
+    advanceToWalking(h)
+    expect(h.runtime.currentVisualState.facing).toBe('left')
+    for (let t = 1300; t <= 3000; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('walking')
+    const last = h.win.setPositionCalls[h.win.setPositionCalls.length - 1]
+    expect(last.x).toBeLessThan(1000)
+    expect(last.y).toBe(200)
+  })
+
+  it('连续多次自动行走 tick，Y 始终不变', () => {
+    const win = new FakeWindow(100, 333)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    for (let t = 1300; t <= 8000; t += 100) {
+      h.tick(t)
+    }
+    // 全部 setPosition 调用（含行走期间所有 tick）Y 均为初始轨道
+    for (const call of h.win.setPositionCalls) {
+      expect(call.y).toBe(333)
+    }
+    expect(h.win.setPositionCalls.length).toBeGreaterThan(10)
+  })
+
+  it('到达右边界：转向后以相反水平方向（向左）恢复行走', () => {
+    const win = new FakeWindow(1670, 100)
+    // 第 3 个随机值 0.99 → 随机选向为向左，与边界反向一致（覆盖验证）；
+    // 即便随机选向不同也会被边界反向覆盖。
+    const h = makeRuntime({ window: win, random: scriptedRandom([0, 0, 0.99]) })
+    h.runtime.start()
+    for (let t = 100; t <= 1400; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('turning')
+    for (let t = 1500; t <= 2000; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('walking')
+    for (let t = 2100; t <= 3000; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('walking')
+    const last = h.win.setPositionCalls[h.win.setPositionCalls.length - 1]
+    expect(last.x).toBeLessThan(1680)
+    expect(last.y).toBe(100)
+    expect(h.runtime.currentVisualState.facing).toBe('left')
+  })
+
+  it('到达左边界：转向后以相反水平方向（向右）恢复行走', () => {
+    const win = new FakeWindow(10, 100)
+    // random 0.5 → 待机到期选向为向左；触左边界转向后按反向（向右）恢复
+    const h = makeRuntime({ window: win, random: scriptedRandom([0.5, 0.5, 0]) })
+    h.runtime.start()
+    // 1.1s 开始向左行走：10 → 4（t=1200）→ 钳制 0 触界（t=1300）
+    for (let t = 100; t <= 1300; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('turning')
+    // 转向 0.5s（浮点累加下 1.9s 到期）后恢复行走
+    for (let t = 1400; t <= 1900; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('walking')
+    for (let t = 2000; t <= 2800; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('walking')
+    const last = h.win.setPositionCalls[h.win.setPositionCalls.length - 1]
+    expect(last.x).toBeGreaterThan(0)
+    expect(last.y).toBe(100)
+    expect(h.runtime.currentVisualState.facing).toBe('right')
+  })
+
+  it('idle / turning / paused 状态不产生位置漂移', () => {
+    const win = new FakeWindow(1670, 100)
+    const h = makeRuntime({ window: win })
+    // idle 阶段：无任何 setPosition
+    h.runtime.start()
+    for (let t = 100; t <= 1000; t += 100) {
+      h.tick(t)
+    }
+    expect(h.win.setPositionCalls).toHaveLength(0)
+    // 行走触界进入 turning
+    for (let t = 1100; t <= 1400; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('turning')
+    const callsDuringTurnStart = h.win.setPositionCalls.length
+    for (let t = 1500; t <= 1700; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('turning')
+    expect(h.win.setPositionCalls.length).toBe(callsDuringTurnStart)
+    // 暂停（在待机恢复前的任意时刻）也不推进位置
+    const h2 = makeRuntime()
+    advanceToWalking(h2)
+    h2.tick(1300)
+    const callsBeforePause = h2.win.setPositionCalls.length
+    h2.runtime.pause()
+    for (let t = 1400; t <= 2000; t += 100) {
+      h2.tick(t)
+    }
+    expect(h2.win.setPositionCalls.length).toBe(callsBeforePause)
+  })
+
+  it('dragging 期间自动移动停止', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    h.tick(1300)
+    expect(h.win.setPositionCalls.length).toBeGreaterThan(0)
+    const calls = h.win.setPositionCalls.length
+    h.runtime.handleDragStart()
+    for (let t = 1400; t <= 2200; t += 100) {
+      h.tick(t)
+    }
+    expect(h.win.setPositionCalls.length).toBe(calls)
+  })
+
+  it('拖动改变 Y 后，后续自动行走保持新的 Y（水平轨道更新，不回旧轨道）', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    h.tick(1300)
+    h.runtime.handleDragStart()
+    // 用户拖动到新高度（垂直位移不受限）
+    h.win.teleport(600, 500)
+    h.runtime.handleDragEnd()
+    for (let t = 1400; t <= 3000; t += 100) {
+      h.tick(t)
+    }
+    for (const call of h.win.setPositionCalls.filter((c) => c.y !== 100)) {
+      expect(call.y).toBe(500)
+    }
+    const last = h.win.setPositionCalls[h.win.setPositionCalls.length - 1]
+    expect(last.y).toBe(500)
+    expect(last.x).toBeGreaterThan(600)
+  })
+
+  it('历史 up/down 方向被规范化为水平方向，不会引起垂直自动移动', () => {
+    // 决策器候选已无垂直方向；运行时对任意决策方向做防御性水平规范化
+    expect(normalizeHorizontalDirection({ x: 0, y: 1 }, { x: -1, y: 0 })).toEqual({ x: -1, y: 0 })
+    expect(normalizeHorizontalDirection({ x: 0, y: -1 }, { x: 1, y: 0 })).toEqual({ x: 1, y: 0 })
+    expect(normalizeHorizontalDirection({ x: 0.3, y: 0.9 }, { x: -1, y: 0 })).toEqual({
+      x: 1,
+      y: 0
+    })
+    expect(normalizeHorizontalDirection({ x: -2, y: 5 }, { x: 1, y: 0 })).toEqual({ x: -1, y: 0 })
+    // 零向量 / 非法分量：回退方向；回退也非法时取右
+    expect(normalizeHorizontalDirection({ x: 0, y: 0 }, { x: -3, y: 0 })).toEqual({ x: -1, y: 0 })
+    expect(normalizeHorizontalDirection({ x: 0, y: 0 }, { x: 0, y: 0 })).toEqual({ x: 1, y: 0 })
+    expect(normalizeHorizontalDirection({ x: Number.NaN, y: 1 }, { x: Number.NaN, y: 0 })).toEqual({
+      x: 1,
+      y: 0
+    })
+    // 规范化输出恒为水平单位向量（y 分量恒 0）
+    for (const d of [
+      { x: 0, y: 1 },
+      { x: 0, y: -1 },
+      { x: 1, y: 1 },
+      { x: -0.5, y: -0.5 }
+    ]) {
+      const normalized = normalizeHorizontalDirection(d, { x: 1, y: 0 })
+      expect(normalized.y).toBe(0)
+      expect(Math.abs(normalized.x)).toBe(1)
+    }
+  })
+
+  it('Y 越出 workArea 时首个行走 tick 修正到边界内（系统位置纠正，非自动行走）', () => {
+    // bounds 1920×1080，窗口高 240 → maxY = 840；初始 Y=2000 越界
+    const win = new FakeWindow(100, 2000)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    for (let t = 1300; t <= 3000; t += 100) {
+      h.tick(t)
+    }
+    const last = h.win.setPositionCalls[h.win.setPositionCalls.length - 1]
+    expect(last.y).toBe(840)
+    // 修正后 Y 稳定在边界轨道上，X 正常推进
+    expect(last.x).toBeGreaterThan(100)
+    for (const call of h.win.setPositionCalls) {
+      expect(call.y).toBe(840)
+    }
+  })
+
+  it('随机待机与行走节奏无回归：行走到期进待机，待机到期再行走', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    // FAST_CONFIG 行走目标 10s：约 1.1s 开始行走，11.1s 到期进待机
+    for (let t = 1300; t <= 11200; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('idle')
+    // 待机 1s 后恢复行走
+    for (let t = 11300; t <= 12300; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('walking')
   })
 })

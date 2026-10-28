@@ -56,12 +56,15 @@ export const DEFAULT_BEHAVIOR_DECIDER_CONFIG: BehaviorDeciderConfig = {
   resumeWalkAfterTurnRatio: 0.7
 }
 
-/** 行走方向候选（单位向量：右、左、下、上） */
+/**
+ * 行走方向候选（单位向量：右、左）。
+ * Task 11D：自动行走仅允许水平方向（用户要求桌宠只左右移动），
+ * 不产生 up/down 自动行走决策；垂直移动只来自用户拖动。
+ * PetVisualState 协议中的 up/down facing 仍保留（向前兼容），但本决策器不再产出。
+ */
 export const WALK_DIRECTIONS: readonly Vec2[] = [
   { x: 1, y: 0 },
-  { x: -1, y: 0 },
-  { x: 0, y: 1 },
-  { x: 0, y: -1 }
+  { x: -1, y: 0 }
 ]
 
 /** 决策器输入：当前情况快照，由调用方（集成层）组装 */
@@ -201,11 +204,17 @@ export function decideBehavior(input: BehaviorDeciderInput): BehaviorDecision {
     case 'walking': {
       // 触及活动边界：请求转向（优先于活动时长判断）。
       if (hasHit(input.hitBounds)) {
-        return { type: 'startTurning', durationSec: sampleDurationSec(config.turnDurationSec, nextRandom) }
+        return {
+          type: 'startTurning',
+          durationSec: sampleDurationSec(config.turnDurationSec, nextRandom)
+        }
       }
       // 连续活动达到目标时长：进入短暂待机。
       if (elapsed >= target) {
-        return { type: 'startIdle', durationSec: sampleDurationSec(config.idleDurationSec, nextRandom) }
+        return {
+          type: 'startIdle',
+          durationSec: sampleDurationSec(config.idleDurationSec, nextRandom)
+        }
       }
       return NO_ACTION
     }
@@ -222,7 +231,10 @@ export function decideBehavior(input: BehaviorDeciderInput): BehaviorDecision {
           durationSec: sampleDurationSec(config.walkDurationSec, nextRandom)
         }
       }
-      return { type: 'startIdle', durationSec: sampleDurationSec(config.idleDurationSec, nextRandom) }
+      return {
+        type: 'startIdle',
+        durationSec: sampleDurationSec(config.idleDurationSec, nextRandom)
+      }
     }
   }
 }

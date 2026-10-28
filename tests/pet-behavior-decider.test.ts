@@ -70,11 +70,27 @@ describe('待机行为', () => {
     const decision = decideBehavior(input({ state: { kind: 'idle' }, elapsedSec: 2, targetDurationSec: 2, random: sequence([0.9]) }))
     expect(decision.type).toBe('startWalking')
     if (decision.type === 'startWalking') {
-      // random 0.9 → index floor(0.9×4)=3 → 上
-      expect(decision.direction).toEqual({ x: 0, y: -1 })
+      // random 0.9 → index floor(0.9×2)=1 → 左（Task 11D：候选仅水平双向）
+      expect(decision.direction).toEqual({ x: -1, y: 0 })
       expect(WALK_DIRECTIONS).toContainEqual(decision.direction)
       // 第二次消耗（序列重复 0.9）：行走时长 6 + 0.9×9 = 14.1
       expect(decision.durationSec).toBeCloseTo(14.1, 10)
+    }
+  })
+
+  it('Task 11D：行走方向候选只包含水平方向，不产出垂直自动行走', () => {
+    expect(WALK_DIRECTIONS).toHaveLength(2)
+    for (const direction of WALK_DIRECTIONS) {
+      expect(direction.y).toBe(0)
+      expect(Math.abs(direction.x)).toBe(1)
+    }
+    // 全部随机值域内产出的方向均为水平单位向量
+    for (const r of [0, 0.2, 0.5, 0.8, 0.99]) {
+      const decision = decideBehavior(input({ state: { kind: 'idle' }, elapsedSec: 2, targetDurationSec: 2, random: sequence([r]) }))
+      if (decision.type === 'startWalking') {
+        expect(decision.direction.y).toBe(0)
+        expect(Math.abs(decision.direction.x)).toBe(1)
+      }
     }
   })
 
@@ -162,8 +178,8 @@ describe('转向行为', () => {
     }))
     expect(decision.type).toBe('startWalking')
     if (decision.type === 'startWalking') {
-      // 第二个随机 0.25 → index 1 → 左
-      expect(decision.direction).toEqual({ x: -1, y: 0 })
+      // 第二个随机 0.25 → index floor(0.25×2)=0 → 右（Task 11D：候选仅水平双向）
+      expect(decision.direction).toEqual({ x: 1, y: 0 })
       // 第三个消耗（序列重复 0.25）：行走时长 6 + 0.25×9 = 8.25
       expect(decision.durationSec).toBeCloseTo(8.25, 10)
     }
@@ -306,12 +322,12 @@ describe('随机差异与输出有效性', () => {
     expect(walk.type).toBe('startWalking')
     expect(idle.type).toBe('startIdle')
 
-    // 方向选择：0.1 → 右；0.5 → 下
+    // 方向选择：0.1 → 右；0.5 → 左（Task 11D：候选仅水平双向）
     const right = decideBehavior(input({ state: { kind: 'idle' }, elapsedSec: 2, targetDurationSec: 2, random: sequence([0.1]) }))
-    const down = decideBehavior(input({ state: { kind: 'idle' }, elapsedSec: 2, targetDurationSec: 2, random: sequence([0.5]) }))
-    if (right.type === 'startWalking' && down.type === 'startWalking') {
+    const left = decideBehavior(input({ state: { kind: 'idle' }, elapsedSec: 2, targetDurationSec: 2, random: sequence([0.5]) }))
+    if (right.type === 'startWalking' && left.type === 'startWalking') {
       expect(right.direction).toEqual({ x: 1, y: 0 })
-      expect(down.direction).toEqual({ x: 0, y: 1 })
+      expect(left.direction).toEqual({ x: -1, y: 0 })
     }
   })
 

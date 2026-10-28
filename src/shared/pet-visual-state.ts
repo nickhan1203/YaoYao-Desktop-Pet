@@ -7,7 +7,8 @@
  * 设计约束：
  * - kind 复用 pet-state-machine 的状态联合（PetState['kind']），
  *   不为视觉通信重建第二套状态机，也不改变现有转换规则；
- * - facing 忠实于行为决策器的四向行走方向（WALK_DIRECTIONS），
+ * - facing 忠实于行为决策器的行走方向（WALK_DIRECTIONS，Task 11D 起为
+ *   水平双向 left/right；up/down 保留为协议兼容值，正常运行时不再产出），
  *   不从窗口位置推断朝向；
  * - 校验函数 isPetVisualState 供 preload 使用：IPC 载荷是不可信输入，
  *   结构不合法的载荷不得被 renderer 当作合法状态使用。
