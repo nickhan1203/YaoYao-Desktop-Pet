@@ -1,5 +1,14 @@
 {
-    "yaml.schemas": {
-        "https://www.schemastore.org/github-workflow.json": "file:///Users/gaoruihan/Workspace/01_Development/Projects/Personal/yaoyao-desktop-pet/.github/workflows/ci.yml"
-    }
+  "yaml.schemas": {
+    "https://schemastore.org/github-workflow.json": "./.github/workflows/ci.yml"
+  },
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  }
 }

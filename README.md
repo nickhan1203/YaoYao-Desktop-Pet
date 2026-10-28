@@ -28,6 +28,39 @@
 6. 通过 Git 将同一提交同步到 Windows 电脑，运行 Windows 自动化检查、打包与实机验收。
 7. 任何一端未实测的系统行为都标记为“待验收”，不得标记为双端通过。
 
+## 开发命令
+
+以仓库根目录 `package.json` 的实际脚本为准（npm，唯一 lockfile 为 `package-lock.json`）：
+
+```bash
+npm install        # 首次安装依赖并生成 lockfile
+npm run dev        # 开发模式启动（electron-vite，renderer 支持 HMR）
+npm test           # 运行 Vitest 纯逻辑单元测试
+npm run lint       # ESLint 检查
+npm run typecheck  # TypeScript 类型检查（node + web 两侧）
+npm run build      # 类型检查 + electron-vite 生产构建
+npm run build:mac  # 构建 macOS arm64 安装包（在 Mac 本机执行）
+npm run build:win  # 构建 Windows x64 NSIS 安装包（在 Windows 原生环境执行）
+```
+
+注意：`build:win` 不在 macOS 上交叉构建执行；Windows 安装包必须由独立 Windows 电脑拉取同一 commit 后原生构建并实机验收。
+
+## 项目结构
+
+```
+src/
+├── main/          # Electron 主进程：应用生命周期与桌宠窗口创建（pet-window.ts）
+├── preload/       # 预加载脚本：contextBridge 暴露最小只读 API
+├── renderer/      # React 渲染进程：占位界面与 PixiJS 画布
+│   └── src/pet/   # 桌宠渲染组件（PetCanvas，后续动画任务扩展点）
+└── shared/        # main 与 renderer 共享的纯逻辑常量（可被单元测试直接引用）
+tests/             # Vitest 纯逻辑单元测试
+build/             # electron-builder 打包资源（图标、entitlements）
+resources/         # 应用运行时资源
+```
+
+透明无边框窗口、状态机、移动与动画均为后续任务，当前为普通窗口占位界面。
+
 ## 重要约定
 
 - 本文档是目标与模板，不假设项目已经初始化。先检查真实 `package.json`、脚手架结构和脚本。

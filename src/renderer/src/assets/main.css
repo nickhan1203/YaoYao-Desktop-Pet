@@ -1,0 +1,53 @@
+:root {
+  color-scheme: light;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+/* 透明桌宠窗口：页面层级全部无默认边距、背景完全透明 */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: transparent;
+}
+
+#root {
+  height: 100%;
+}
+
+.app {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+
+.pet-canvas {
+  width: 240px;
+  height: 240px;
+  /* 拖动交互：可抓取光标、禁用文本选择与触摸手势 */
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pet-canvas:active {
+  cursor: grabbing;
+}
+
+.app__label {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  font-size: 30px;
+  font-weight: 600;
+  color: #4a3f35;
+  pointer-events: none;
+  text-shadow: 0 1px 3px rgb(255 255 255 / 45%);
+}
