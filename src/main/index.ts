@@ -7,11 +7,15 @@ import {
   registerPetIpcHandlers,
   registerDevDebugHandlers,
   registerContextMenuHandler,
-  registerSettingsHandlers
+  registerSettingsHandlers,
+  registerLoginItemHandlers
 } from './ipc-handlers'
 import { PetBehaviorRuntime, type RuntimeWindow } from './pet-behavior-runtime'
 import { AppLifecycleController } from './app-lifecycle-controller'
 import { AppTrayController } from './app-tray'
+import { LoginItemController, type LoginItemUpdateResult } from './login-item-controller'
+import { LOGIN_ITEM_CHANGED_CHANNEL, LOGIN_ITEM_ERROR_CHANNEL } from '../shared/login-item'
+import type { LoginItemStatus } from '../shared/login-item'
 import { createSettingsWindow } from './settings-window'
 import { PetSettingsStore, type SettingsFileAdapter } from './settings-store'
 import { PetSettingsController } from './settings-controller'
@@ -315,7 +319,28 @@ function createLifecycleController(): AppLifecycleController {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
+
+// Task 12E：单实例锁（登录自启动 + 手动打开可能并发启动两个实例）。
+// 请求锁失败（已有实例运行）时立即退出第二实例；既有实例收到
+// second-instance 后显示桌宠（隐藏则恢复）。锁在窗口创建前请求。
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+}
+app.on('second-instance', () => {
+  // 手动再次打开应用：唤起桌宠（隐藏状态下恢复显示，聚焦交给用户）。
+  if (petWindow && !petWindow.isDestroyed()) {
+    if (!petWindow.isVisible()) {
+      petWindow.showInactive()
+    }
+  }
+})
+
 app.whenReady().then(() => {
+  // 第二实例（锁失败，退出中）：不再创建窗口/托盘，直接返回。
+  if (!gotSingleInstanceLock) {
+    return
+  }
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.yaoyao.desktoppet')
 
@@ -418,6 +443,35 @@ app.whenReady().then(() => {
       settingsController?.getSettings() ?? { ...DEFAULT_PET_SETTINGS },
     updateSettings: (payload: unknown): PetSettings | null =>
       settingsController?.updateSettings(payload) ?? null
+  })
+
+  // Task 12E：登录自启动 IPC——系统登录项是唯一权威（实时读写，不落
+  // settings.json）；开发环境（!app.isPackaged）由控制器拒绝系统写入，
+  // 防止 dev 实例注册为系统登录项。广播只发设置窗口（唯一消费方）。
+  const loginItemController = new LoginItemController({
+    api: {
+      setLoginItemSettings: (settings): void => {
+        app.setLoginItemSettings(settings)
+      },
+      getLoginItemSettings: (): { openAtLogin: boolean } => {
+        return { openAtLogin: app.getLoginItemSettings().openAtLogin }
+      }
+    },
+    isPackaged: app.isPackaged
+  })
+  registerLoginItemHandlers({
+    readStatus: (): LoginItemStatus => loginItemController.readStatus(),
+    setEnabled: (enabled: boolean): LoginItemUpdateResult =>
+      loginItemController.setEnabled(enabled),
+    notify: (result, status): void => {
+      if (settingsWindow && !settingsWindow.isDestroyed()) {
+        if (result.ok) {
+          settingsWindow.webContents.send(LOGIN_ITEM_CHANGED_CHANNEL, status.enabled)
+        } else {
+          settingsWindow.webContents.send(LOGIN_ITEM_ERROR_CHANNEL, result.reason)
+        }
+      }
+    }
   })
 
   registerPetIpcHandlers(

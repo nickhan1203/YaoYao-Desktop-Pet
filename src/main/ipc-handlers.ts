@@ -8,6 +8,13 @@ import {
   type PetSettings
 } from '../shared/pet-settings'
 import {
+  LOGIN_ITEM_GET_CHANNEL,
+  LOGIN_ITEM_UPDATE_CHANNEL,
+  parseLoginItemUpdate,
+  type LoginItemStatus
+} from '../shared/login-item'
+import type { LoginItemUpdateResult } from './login-item-controller'
+import {
   DEV_DEBUG_COMMAND_CHANNEL,
   DEV_DEBUG_GET_STATE_CHANNEL,
   parseDevDebugCommand,
@@ -163,6 +170,39 @@ export function registerSettingsHandlers(handlers: SettingsHandlers): void {
   })
   ipcMain.on(SETTINGS_UPDATE_CHANNEL, (_event, payload: unknown) => {
     handlers.updateSettings(payload)
+  })
+}
+
+/**
+ * 注册登录自启动 IPC handler（Task 12E）。
+ *
+ * 最小权限说明（与 settings 同一模式）：
+ * - GET（invoke）：返回固定结构 LoginItemStatus（系统实际注册状态的
+ *   实时快照，无缓存）；
+ * - UPDATE（send）：载荷经 parseLoginItemUpdate 校验（仅严格布尔），
+ *   非法载荷整体忽略（不回执、不抛错）；
+ * - 操作结果（成功新状态 / 失败原因）由主进程单向广播给设置窗口，
+ *   renderer 无法伪造"已保存"；
+ * - 不暴露可执行文件路径、注册表路径或系统命令参数。
+ */
+export interface LoginItemHandlers {
+  /** 读取系统登录项实际状态（controller 实时查询） */
+  readStatus: () => LoginItemStatus
+  /** 注册/注销（dev 环境由 controller 拒绝） */
+  setEnabled: (enabled: boolean) => LoginItemUpdateResult
+  /** 操作结果通知（接线层发送给设置窗口） */
+  notify: (result: LoginItemUpdateResult, status: LoginItemStatus) => void
+}
+
+export function registerLoginItemHandlers(handlers: LoginItemHandlers): void {
+  ipcMain.handle(LOGIN_ITEM_GET_CHANNEL, (): LoginItemStatus => handlers.readStatus())
+  ipcMain.on(LOGIN_ITEM_UPDATE_CHANNEL, (_event, payload: unknown) => {
+    const enabled = parseLoginItemUpdate(payload)
+    if (enabled === null) {
+      return
+    }
+    const result = handlers.setEnabled(enabled)
+    handlers.notify(result, handlers.readStatus())
   })
 }
 

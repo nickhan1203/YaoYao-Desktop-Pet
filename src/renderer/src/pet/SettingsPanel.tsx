@@ -13,6 +13,18 @@ import {
   type PetSettingsUpdate
 } from '../../../shared/pet-settings'
 
+/** 登录自启动开关状态（Task 12E：系统登录项实时快照，非本地缓存权威） */
+interface LoginItemUiState {
+  /** 状态读取中（开关禁用并显示加载反馈） */
+  loading: boolean
+  /** 当前环境是否支持（开发模式为 false：开关禁用并提示） */
+  supported: boolean
+  /** 系统实际注册状态（权威显示依据） */
+  enabled: boolean
+  /** 最近一次操作失败原因（null=无错误） */
+  error: string | null
+}
+
 /**
  * 幺幺设置面板（Task 12B-UI，Modern Minimal Cards 风格）。
  *
@@ -53,12 +65,29 @@ function sliderFillPercent(value: number, min: number, max: number): number {
   return ((value - min) / (max - min)) * 100
 }
 
+/** Task 12E：登录项状态载荷结构守卫（invoke 返回前的窄校验） */
+function isLoginItemStatus(value: unknown): value is { supported: boolean; enabled: boolean } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { supported?: unknown }).supported === 'boolean' &&
+    typeof (value as { enabled?: unknown }).enabled === 'boolean'
+  )
+}
+
 export function SettingsPanel(): React.JSX.Element {
   const [settings, setSettings] = useState<PetSettings | null>(null)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [confirmingReset, setConfirmingReset] = useState(false)
   /** 广播回执去重：与本地最新值一致时不再重复写本地状态 */
   const latestSettingsRef = useRef<PetSettings | null>(null)
+  /** Task 12E：登录自启动（系统登录项为唯一权威，每次挂载实时读取） */
+  const [loginItem, setLoginItem] = useState<LoginItemUiState>({
+    loading: true,
+    supported: false,
+    enabled: false,
+    error: null
+  })
 
   useEffect(() => {
     let receivedBroadcast = false
@@ -90,6 +119,60 @@ export function SettingsPanel(): React.JSX.Element {
       unsubscribeSaveError?.()
     }
   }, [])
+
+  // Task 12E：登录自启动——挂载时查询系统实际状态；订阅主进程操作
+  // 结果广播（成功新状态 / 失败原因）。重开设置窗口即重新读取，
+  // 用户在系统设置外部修改后状态立即反映；卸载时取消全部订阅。
+  useEffect(() => {
+    let active = true
+    const unsubscribeChanged = window.yaoyao?.onLoginItemChanged((enabled) => {
+      if (active) {
+        setLoginItem((prev) => ({ ...prev, loading: false, enabled, error: null }))
+      }
+    })
+    const unsubscribeError = window.yaoyao?.onLoginItemError((reason) => {
+      if (active) {
+        setLoginItem((prev) => ({ ...prev, loading: false, error: reason }))
+      }
+    })
+    void window.yaoyao
+      ?.getLoginItemStatus()
+      .then((payload): void => {
+        if (active && isLoginItemStatus(payload)) {
+          setLoginItem({
+            loading: false,
+            supported: payload.supported,
+            enabled: payload.enabled,
+            error: null
+          })
+        } else if (active) {
+          setLoginItem((prev) => ({ ...prev, loading: false }))
+        }
+      })
+      .catch((): void => {
+        // 查询失败：开关保持禁用（不假定任何注册状态）
+        if (active) {
+          setLoginItem((prev) => ({ ...prev, loading: false }))
+        }
+      })
+    return (): void => {
+      active = false
+      unsubscribeChanged?.()
+      unsubscribeError?.()
+    }
+  }, [])
+
+  /** Task 12E：切换登录自启动——发送窄 IPC 请求，显示以主进程广播
+   * 回执为准（本地不伪造成功状态）；请求期间开关禁用防连点竞态。 */
+  const toggleLoginItem = (): void => {
+    setLoginItem((prev) => {
+      if (prev.loading || !prev.supported) {
+        return prev
+      }
+      window.yaoyao?.updateLoginItem(!prev.enabled)
+      return { ...prev, loading: true, error: null }
+    })
+  }
 
   const update = (patch: PetSettingsUpdate): void => {
     const current = latestSettingsRef.current
@@ -123,6 +206,45 @@ export function SettingsPanel(): React.JSX.Element {
   return (
     <div className="settings-app">
       <div className="settings-scroll">
+        <section className="settings-card" aria-label="常规">
+          <h2 className="settings-card-title">常规</h2>
+
+          <div className="settings-card-row">
+            <div className="settings-card-copy">
+              <h3 className="settings-field-label">登录时自动启动</h3>
+              <p className="settings-card-desc">登录电脑后，自动启动幺幺。</p>
+              {import.meta.env.DEV && (
+                <p className="settings-card-hint" data-login-item-dev-hint="true">
+                  开发模式下不可修改系统登录项，请使用正式打包应用验证。
+                </p>
+              )}
+              {loginItem.error !== null && (
+                <p className="settings-card-hint-alert" data-login-item-error="true">
+                  {loginItem.error}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              role="switch"
+              className="settings-toggle"
+              data-setting="launchAtLogin"
+              aria-checked={loginItem.enabled}
+              aria-label="登录时自动启动"
+              aria-disabled={!loginItem.supported || loginItem.loading}
+              disabled={!loginItem.supported || loginItem.loading}
+              onClick={(): void => {
+                toggleLoginItem()
+              }}
+            >
+              <span className="settings-toggle-thumb" />
+              <span className="settings-toggle-label-sr">
+                {loginItem.loading ? '正在读取状态…' : loginItem.enabled ? '已开启' : '已关闭'}
+              </span>
+            </button>
+          </div>
+        </section>
+
         <section className="settings-card" aria-label="自动活动">
           <div className="settings-card-row">
             <div className="settings-card-copy">

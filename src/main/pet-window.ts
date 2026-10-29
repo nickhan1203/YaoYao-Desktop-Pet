@@ -34,7 +34,12 @@ function computeInitialPosition(): { x: number; y: number } {
  * - frame: false + transparent: true 实现无边框透明桌宠外观；
  * - hasShadow: false 避免 macOS 在透明窗口内容周围绘制阴影；
  * - alwaysOnTop 暂不启用（保守默认值，待托盘/菜单任务中双端实测后再定层级）；
- * - resizable: false 桌宠窗口不需要用户手动调整尺寸。
+ * - resizable: false 桌宠窗口不需要用户手动调整尺寸；
+ * - skipTaskbar: true（Task 12E-B）：桌宠窗口不显示 Windows 任务栏图标——
+ *   任务栏入口会让"关闭任务栏窗口"触发 close 拦截转隐藏，造成"幺幺消失
+ *   但进程存活"的困惑；显示/隐藏/退出的唯一入口是系统托盘。仅作用于
+ *   桌宠窗口（设置窗口保持正常任务栏切换），不影响 close→hide 语义、
+ *   置顶、穿透与拖动；activate 重建走本构造自动保持。
  */
 export function createPetWindow(): BrowserWindow {
   const { x, y } = computeInitialPosition()
@@ -54,6 +59,7 @@ export function createPetWindow(): BrowserWindow {
     backgroundColor: '#00000000',
     hasShadow: false,
     resizable: false,
+    skipTaskbar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

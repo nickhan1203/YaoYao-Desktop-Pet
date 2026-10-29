@@ -21,6 +21,12 @@ import {
   DEV_INTERACTION_PREVIEW_CHANNEL,
   isDevInteractionPreviewKind
 } from '../shared/dev-debug'
+import {
+  LOGIN_ITEM_CHANGED_CHANNEL,
+  LOGIN_ITEM_ERROR_CHANNEL,
+  LOGIN_ITEM_GET_CHANNEL,
+  LOGIN_ITEM_UPDATE_CHANNEL
+} from '../shared/login-item'
 
 /** 视觉状态广播通道（与主进程 index.ts 保持一致） */
 const VISUAL_STATE_CHANNEL = 'pet:visual-state-changed'
@@ -161,6 +167,50 @@ const yaoyaoAPI = {
     ipcRenderer.on(DEV_INTERACTION_PREVIEW_CHANNEL, listener)
     return (): void => {
       ipcRenderer.removeListener(DEV_INTERACTION_PREVIEW_CHANNEL, listener)
+    }
+  },
+  /**
+   * Task 12E 登录自启动：查询系统实际登录项状态（invoke，主进程实时
+   * 读取 app.getLoginItemSettings，无缓存）。开发环境返回
+   * supported=false（开关禁用并提示）。
+   */
+  getLoginItemStatus: (): Promise<unknown> => ipcRenderer.invoke(LOGIN_ITEM_GET_CHANNEL),
+  /**
+   * Task 12E 登录自启动：请求注册/注销（send，仅布尔载荷）。系统写入
+   * 与结果反馈均由主进程完成——开发环境主进程拒绝写入，renderer 不能
+   * 直接触碰系统登录项。
+   */
+  updateLoginItem: (enabled: boolean): void => {
+    ipcRenderer.send(LOGIN_ITEM_UPDATE_CHANNEL, enabled)
+  },
+  /**
+   * Task 12E 登录自启动：订阅操作成功后的状态广播（主进程写后读回
+   * 复核通过才广播）。返回幂等取消订阅函数。
+   */
+  onLoginItemChanged: (callback: (enabled: boolean) => void): (() => void) => {
+    const listener = (_event: unknown, payload: unknown): void => {
+      if (typeof payload === 'boolean') {
+        callback(payload)
+      }
+    }
+    ipcRenderer.on(LOGIN_ITEM_CHANGED_CHANNEL, listener)
+    return (): void => {
+      ipcRenderer.removeListener(LOGIN_ITEM_CHANGED_CHANNEL, listener)
+    }
+  },
+  /**
+   * Task 12E 登录自启动：订阅操作失败反馈（含主进程生成的面向用户
+   * 原因文案）。返回幂等取消订阅函数。
+   */
+  onLoginItemError: (callback: (reason: string) => void): (() => void) => {
+    const listener = (_event: unknown, payload: unknown): void => {
+      if (typeof payload === 'string') {
+        callback(payload)
+      }
+    }
+    ipcRenderer.on(LOGIN_ITEM_ERROR_CHANNEL, listener)
+    return (): void => {
+      ipcRenderer.removeListener(LOGIN_ITEM_ERROR_CHANNEL, listener)
     }
   }
 }

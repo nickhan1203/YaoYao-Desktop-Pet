@@ -25,6 +25,7 @@
   --danger: #b3554d;
   --danger-soft: #f9eceb;
   --focus-ring: rgba(103, 137, 198, 0.45);
+  --scrollbar-thumb: #c3c8d0;
 
   /* spacing tokens */
   --page-padding: 20px;
@@ -59,11 +60,21 @@
     --danger: #d07f77;
     --danger-soft: #3a2d2c;
     --focus-ring: rgba(125, 155, 216, 0.5);
+    --scrollbar-thumb: #4a5058;
   }
 }
 
 /* ---------- 滚动内容区 ---------- */
 
+/*
+ * 自定义滚动条（Task 12B-UI-Fix）：标准属性方案（Chromium 121+ / Electron 44 完全支持）。
+ * 刻意不用 ::-webkit-scrollbar 伪元素——一旦启用会切换为 legacy custom
+ * painting 滚动条并使标准属性失效，且在 macOS 上破坏系统 Overlay
+ * Scrollbar 原生显隐行为。标准 scrollbar-color/width：
+ * - macOS：保留 Overlay 显示/隐藏（不占布局、不常显）；
+ * - Windows：thin 宽度 + 主题化滑块颜色，轨道透明；
+ * - 仅作用于 .settings-scroll（选择器带作用域，全局滚动条不受影响）。
+ */
 .settings-scroll {
   position: relative; /* 绝对定位的视觉隐藏 radio 以此为包含块，溢出被本容器裁剪 */
   flex: 1 1 auto;
@@ -73,6 +84,7 @@
   flex-direction: column;
   gap: var(--card-gap);
   scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 .settings-loading {
@@ -138,6 +150,19 @@
   font-size: 11px;
   font-weight: 600;
   color: var(--danger);
+}
+
+/* Task 12E：登录自启动开发模式提示（中性灰色，与警示红区分） */
+.settings-card-hint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* Task 12E：登录项开关加载/不可用态（读取系统状态期间禁用） */
+.settings-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ---------- 字段 ---------- */
@@ -232,6 +257,15 @@
 
 /* ---------- 开关（原生 button role=switch） ---------- */
 
+/*
+ * 尺寸模型（Task 12B-UI-Fix，全部从同一组参数推导）：
+ * - 轨道 44×26（button UA 默认 border-box，含 1px 边框）→ 内腔 42×24；
+ * - 滑块 20×20（显式 border-box），gap 2px：垂直 [2,22] 在 24 内腔居中；
+ * - 行程 = 42 − 20 − 2×2 = 18px：关闭态滑块贴左、开启态贴右，
+ *   两侧 gap（含轨道边框各 3px 视觉）严格对称；
+ * - 滑块立体感用 box-shadow 替代边框：尺寸恒定，避免开启态边框
+ *   透明化造成的直径 22→20 视觉跳变与中心偏移。
+ */
 .settings-toggle {
   position: relative;
   flex: none;
@@ -240,7 +274,7 @@
   margin: 0;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 13px;
+  border-radius: 999px;
   background: var(--track);
   cursor: pointer;
   transition: background 140ms ease, border-color 140ms ease;
@@ -248,14 +282,16 @@
 
 .settings-toggle-thumb {
   position: absolute;
+  box-sizing: border-box;
   top: 2px;
   left: 2px;
   display: block;
   width: 20px;
   height: 20px;
+  border: none;
   border-radius: 50%;
   background: #ffffff;
-  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
   transition: transform 140ms ease;
 }
 
@@ -266,7 +302,6 @@
 
 .settings-toggle[aria-checked='true'] .settings-toggle-thumb {
   transform: translateX(18px);
-  border-color: transparent;
 }
 
 .settings-toggle:hover {

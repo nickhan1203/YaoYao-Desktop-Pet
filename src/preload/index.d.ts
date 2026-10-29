@@ -67,6 +67,26 @@ declare global {
       onDevInteractionPreview: (
         callback: (kind: 'click' | 'pickup' | 'release') => void
       ) => () => void
+      /**
+       * Task 12E 登录自启动：查询系统实际登录项状态（实时读取无缓存；
+       * 开发环境 supported=false）。返回幂等取消订阅函数。
+       */
+      getLoginItemStatus: () => Promise<unknown>
+      /**
+       * Task 12E 登录自启动：请求注册/注销（仅布尔载荷，系统写入由
+       * 主进程执行且开发环境拒绝）。
+       */
+      updateLoginItem: (enabled: boolean) => void
+      /**
+       * Task 12E 登录自启动：订阅操作成功后的状态广播。
+       * 返回幂等取消订阅函数。
+       */
+      onLoginItemChanged: (callback: (enabled: boolean) => void) => () => void
+      /**
+       * Task 12E 登录自启动：订阅操作失败反馈（含面向用户的原因文案）。
+       * 返回幂等取消订阅函数。
+       */
+      onLoginItemError: (callback: (reason: string) => void) => () => void
     }
   }
 }
