@@ -21,9 +21,15 @@ yaoyao-animation-v2/
 yaoyao-animation-v3/
 yaoyao-animations-v2.zip
 yaoyao-animations-v3.zip
+# Task 12D：v4 素材源包与图标源包（运行时帧已复制到 assets/pet/v4 与 build/、resources/tray/；
+# 来源与备份说明见 docs/assets.md，本地保留不入库）
+yaoyao-animation-v4/
+yaoyao-icons/
 # Local app data and OS/editor noise
 .DS_Store
 Thumbs.db
 .codebuddy/settings.local.json
 .codebuddy/plans/
 .eslintcache
+# CDP 实机验收产生的临时截图（可重新生成）
+.tmp-*.png
