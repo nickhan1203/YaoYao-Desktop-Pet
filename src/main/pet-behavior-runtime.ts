@@ -75,6 +75,7 @@ import {
   type BehaviorDeciderConfig,
   type RandomSource
 } from '../shared/pet-behavior-decider'
+import { isAutoActive } from '../shared/pet-state-machine'
 import { PET_RUN_SPEED_PX_PER_SEC, PET_WALK_SPEED_PX_PER_SEC } from '../shared/pet-config'
 import { toPetFacing, type PetVisualState } from '../shared/pet-visual-state'
 import type { DebugBehaviorTarget } from '../shared/dev-debug'
@@ -123,6 +124,17 @@ const DEFAULT_TICK_INTERVAL_MS = 50
  */
 export const REST_EXIT_GUARD_SEC = 1.5
 
+/**
+ * Task 11J 落地保护时长（秒）：
+ * 拖动结束后（DRAG_END 恢复拖动前状态），若恢复的是移动状态
+ *（walking / running），窗口位置推进延迟该时长，覆盖 renderer 的
+ * 放下过渡动画（07→08→01，140+180+160 = 480ms），保证"放下尚未
+ * 完成时主进程不提前移动窗口"。超时自动恢复移动（renderer 出错也
+ * 不会永久停住）；新拖动开始（DRAG_START）立即清零（放下途中再次
+ * 抓取不受保护拖延）。
+ */
+export const LANDING_GUARD_SEC = 0.48
+
 function defaultScheduler(callback: () => void, intervalMs: number): () => void {
   const timer = setInterval(callback, intervalMs)
   return () => clearInterval(timer)
@@ -130,6 +142,28 @@ function defaultScheduler(callback: () => void, intervalMs: number): () => void 
 
 function anyHit(hit: BoundsHit): boolean {
   return hit.left || hit.right || hit.top || hit.bottom
+}
+
+/** 正有限数判定（速度等运行时参数防御） */
+function isPositiveFinite(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+/** 自动行为状态 → 安全回到 idle 的状态机事件（其他状态返回 null） */
+function autoActivityEndEvent(state: PetState): PetEvent | null {
+  switch (state.kind) {
+    case 'walking':
+      return { type: 'WALK_END' }
+    case 'turning':
+      return { type: 'TURN_END' }
+    case 'running':
+      return { type: 'RUN_END' }
+    case 'sitting':
+    case 'lying':
+      return { type: 'REST_END' }
+    default:
+      return null
+  }
 }
 
 /**
@@ -206,9 +240,12 @@ export class PetBehaviorRuntime {
   private readonly clock: () => number
   private readonly random: RandomSource
   private readonly scheduler: Scheduler
-  private readonly deciderConfig: BehaviorDeciderConfig
-  private readonly walkSpeedPxPerSec: number
-  private readonly runSpeedPxPerSec: number
+  /** 行为决策配置（Task 12B 起可经 applyRuntimeConfig 动态更新） */
+  private deciderConfig: BehaviorDeciderConfig
+  /** 行走速度（Task 12B 起可动态更新，立即作用于后续 movement tick） */
+  private walkSpeedPxPerSec: number
+  /** 跑步速度（Task 12B 起与行走速度按 1.6 倍率派生更新） */
+  private runSpeedPxPerSec: number
   private readonly tickIntervalMs: number
 
   private state: PetState = INITIAL_PET_STATE
@@ -246,12 +283,28 @@ export class PetBehaviorRuntime {
    */
   private runCooldownRemainingSec = 0
   /**
+   * 落地保护剩余秒数（Task 11J）：DRAG_END 时重置为 LANDING_GUARD_SEC，
+   * 随 tick 递减；> 0 期间 walking / running 不推进窗口位置（放下动画
+   * 完成前窗口静止）。DRAG_START 清零（新拖动中断保护）。
+   * 与冷却计时一致：dragging / paused 期间冻结（确定性可测）。
+   */
+  private landingGuardRemainingSec = 0
+  /**
    * 调试控制模式（Task 11H-C，仅开发构建经窄 IPC 触发）：
    * true 时跳过自动决策（行为时长到期不触发阶段转换），但窗口仍按
    * 当前状态真实移动（walking/running 以真实速度推进坐标）。
    * debugResumeAutoBehavior() 释放并重采样当前状态目标时长。
    */
   private debugMode = false
+  /**
+   * 自动活动总开关（Task 12B 用户设置，持久化偏好）：
+   * false 时无自主移动与随机行为决策——当前自动行为状态经状态机
+   * 事件安全回到 idle（tick 自愈任何恢复路径：拖动结束/继续活动等
+   * 恢复的自动状态会被立即结束），鼠标交互（点击/拖动/拎起/放下）
+   * 不受影响。与 12A 用户暂停（paused）完全独立：
+   * "继续活动"不会绕过该偏好，隐藏/调试暂停也不会改变它。
+   */
+  private autoActivityEnabled = true
   private cancelLoop: (() => void) | null = null
   private lastTickMs: number | null = null
   private running = false
@@ -336,7 +389,18 @@ export class PetBehaviorRuntime {
     this.state = transition(this.state, { type: 'DRAG_START' })
     this.currentHit = null
     this.pendingTurnDirection = null
+    // Task 11J：新拖动中断落地保护（放下途中再次抓取不受保护拖延）。
+    this.landingGuardRemainingSec = 0
     this.broadcastVisualState()
+  }
+
+  /**
+   * Task 12A：外部（重置位置/显示边界修正）移动窗口后同步内部位置基准。
+   * 运行时的行走计算基于内部 position（浮点），外部 setPosition 若不同步，
+   * 下一个行走 tick 会把窗口拉回旧位置。同步后新 Y 即新的水平行走轨道。
+   */
+  handleExternalPositionChange(): void {
+    this.syncPositionFromWindow()
   }
 
   /**
@@ -352,6 +416,9 @@ export class PetBehaviorRuntime {
     this.currentHit = null
     this.pendingTurnDirection = null
     this.targetDurationSec = this.sampleTargetFor(this.state)
+    // Task 11J：落地保护——放下过渡动画（480ms）完成前，恢复的
+    // walking / running 不推进窗口位置（超时自动恢复，见 tick）。
+    this.landingGuardRemainingSec = LANDING_GUARD_SEC
     // Task 11H-B：松手位置贴近左右边界（或被拖出边界）且恢复的方向
     // 指向不可移动一侧时，预先反转朝向，保证恢复自动行走的第一个
     // tick 即向可移动方向移动（位置越界由行走钳制纠正）。
@@ -436,6 +503,13 @@ export class PetBehaviorRuntime {
       return
     }
 
+    // Task 12B：自动活动关闭时，任何路径恢复出的自动行为状态（拖动结束、
+    // 继续活动、暂停恢复等）在 tick 自愈回到 idle——不产生自主移动；
+    // 决策在本轮 tick 末尾一并跳过（见 autoActivityEnabled 检查）。
+    if (!this.autoActivityEnabled && isAutoActive(this.state)) {
+      this.endAutoActivity()
+    }
+
     this.behaviorElapsedSec += dtSec
     // Task 11G：休息冷却随行为时间递减（paused/dragging 冻结在上方早退）。
     if (this.restCooldownRemainingSec > 0) {
@@ -445,10 +519,19 @@ export class PetBehaviorRuntime {
     if (this.runCooldownRemainingSec > 0) {
       this.runCooldownRemainingSec = Math.max(0, this.runCooldownRemainingSec - dtSec)
     }
+    if (this.landingGuardRemainingSec > 0) {
+      // Task 11J：落地保护随真实时间递减（超时自动恢复移动；
+      // dragging / paused 期间与其他计时一致冻结——见 freeze 语义注释）。
+      this.landingGuardRemainingSec = Math.max(0, this.landingGuardRemainingSec - dtSec)
+    }
+
+    // Task 11J：落地保护期内不推进窗口位置——renderer 的放下过渡动画
+    //（480ms）完成前保持静止；行为状态与决策计时不受影响（状态机照常）。
+    const landingHold = this.landingGuardRemainingSec > 0
 
     // Task 11G/11H：仅 walking / running 推进窗口位置；
     // sitting / lying 保持静止（不产生任何 setPosition）。
-    if (this.state.kind === 'walking' || this.state.kind === 'running') {
+    if ((this.state.kind === 'walking' || this.state.kind === 'running') && !landingHold) {
       const bounds = this.getBounds()
       const speedPxPerSec =
         this.state.kind === 'running' ? this.runSpeedPxPerSec : this.walkSpeedPxPerSec
@@ -485,7 +568,8 @@ export class PetBehaviorRuntime {
 
     // Task 11H-C：调试控制模式下不做自动决策（窗口仍按当前状态真实移动），
     // 行为时长到期不触发阶段转换；恢复自动行为时重置计时与目标。
-    if (this.debugMode) {
+    // Task 12B：自动活动关闭时同样跳过决策（用户持久化偏好）。
+    if (this.debugMode || !this.autoActivityEnabled) {
       return
     }
 
@@ -515,11 +599,13 @@ export class PetBehaviorRuntime {
    * - 非 idle 状态先经合法事件回到待机（WALK_END/RUN_END/TURN_END/REST_END
    *   由 startIdle 按当前状态映射），再进入目标状态；
    * - walking / running 沿用当前水平方向与真实速度（窗口真实移动）；
+   *   Task 11I：walking 可显式指定朝向（面板左/右向行走预览），方向仍经
+   *   applyDecision 的水平规范化落位，不绕过状态机；
    * - dragging / paused 优先于调试（直接忽略，不锁死用户操作）；
    * - 进入调试控制模式（跳过自动决策）；重复调用幂等（每次重新落位
    *   目标状态，不产生多重计时器或订阅）。
    */
-  debugForceBehavior(target: DebugBehaviorTarget): void {
+  debugForceBehavior(target: DebugBehaviorTarget, facing?: 'left' | 'right'): void {
     if (this.state.kind === 'dragging' || this.state.kind === 'paused') {
       return
     }
@@ -534,9 +620,15 @@ export class PetBehaviorRuntime {
       })
     }
     if (target === 'walking') {
+      const direction =
+        facing === 'left'
+          ? { x: -1, y: 0 }
+          : facing === 'right'
+            ? { x: 1, y: 0 }
+            : this.walkDirection
       this.applyDecision({
         type: 'startWalking',
-        direction: this.walkDirection,
+        direction,
         durationSec: sampleDurationSec(this.deciderConfig.walkDurationSec, this.random)
       })
     } else if (target === 'running') {
@@ -576,6 +668,89 @@ export class PetBehaviorRuntime {
   /** 当前是否处于调试控制模式（自动决策已挂起） */
   get isDebugControlled(): boolean {
     return this.debugMode
+  }
+
+  /**
+   * Task 12B：动态应用运行时配置（用户设置）。
+   * - 速度立即作用于后续 movement tick（正在行走时下一个 tick 即用新值），
+   *   不重置当前行为状态与计时（更新不产生意外移动）；
+   * - 决策配置更新时剩余冷却立即收紧到新上限（min 策略：不延长剩余
+   *   冷却；调低频率立即可感知，调高频率按新冷却正常生效）；
+   * - 正在拖动、暂停或休息时调用同样安全：只改参数，行为由状态机照常。
+   */
+  applyRuntimeConfig(config: {
+    walkSpeedPxPerSec?: number
+    runSpeedPxPerSec?: number
+    decider?: BehaviorDeciderConfig
+  }): void {
+    if (isPositiveFinite(config.walkSpeedPxPerSec)) {
+      this.walkSpeedPxPerSec = config.walkSpeedPxPerSec
+    }
+    if (isPositiveFinite(config.runSpeedPxPerSec)) {
+      this.runSpeedPxPerSec = config.runSpeedPxPerSec
+    }
+    if (config.decider !== undefined) {
+      this.deciderConfig = config.decider
+      // 冷却收紧：剩余值不超过新配置上限（立即收紧，不延长）。
+      this.runCooldownRemainingSec = Math.min(
+        this.runCooldownRemainingSec,
+        this.deciderConfig.runCooldownSec
+      )
+      this.restCooldownRemainingSec = Math.min(
+        this.restCooldownRemainingSec,
+        this.deciderConfig.restCooldownSec
+      )
+    }
+  }
+
+  /**
+   * Task 12B：自动活动总开关（用户持久化偏好，与 12A 用户暂停独立）。
+   * - 关闭：当前自动行为状态经状态机事件安全回到 idle（walking→WALK_END
+   *   等），决策与自主移动停止；鼠标交互不受影响；paused / dragging 期间
+   *   仅记录标志（恢复路径由 tick 自愈收口）；
+   * - 开启：重新采样当前状态目标时长（避免禁用期间累积的 elapsed 立即
+   *   触发转换），自动决策从当前状态继续。
+   */
+  setAutoActivityEnabled(enabled: boolean): void {
+    if (this.autoActivityEnabled === enabled) {
+      return
+    }
+    this.autoActivityEnabled = enabled
+    if (!enabled) {
+      if (this.state.kind === 'paused' || this.state.kind === 'dragging') {
+        return
+      }
+      this.endAutoActivity()
+      return
+    }
+    // 重新开启：重置计时并重采样目标（从当前状态自然继续）。
+    this.behaviorElapsedSec = 0
+    this.targetDurationSec = this.sampleTargetFor(this.state)
+  }
+
+  /** 当前自动活动开关状态（设置查询用） */
+  get isAutoActivityEnabled(): boolean {
+    return this.autoActivityEnabled
+  }
+
+  /**
+   * 结束当前自动行为状态回到 idle（自动活动关闭路径专用）。
+   * 经状态机合法事件转换（不绕过状态机）；重置计时并广播视觉状态。
+   */
+  private endAutoActivity(): void {
+    const event = autoActivityEndEvent(this.state)
+    if (event === null) {
+      return
+    }
+    const next = transition(this.state, event)
+    if (next === this.state) {
+      return
+    }
+    this.state = next
+    this.behaviorElapsedSec = 0
+    this.targetDurationSec = this.sampleTargetFor(this.state)
+    this.currentHit = null
+    this.broadcastVisualState()
   }
 
   private applyDecision(decision: BehaviorDecision): void {

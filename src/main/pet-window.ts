@@ -9,18 +9,20 @@ import {
   PET_WINDOW_TITLE,
   PET_WINDOW_WIDTH
 } from '../shared/pet-config'
+import { computePetPlacement } from '../shared/pet-placement'
 
 /**
  * 计算窗口初始位置：停靠在主显示器工作区右下角并留出边距，
  * 避免默认出现在屏幕中央遮挡主要工作区域。
- * 基于 workArea 计算，可兼容 Dock/任务栏与负坐标显示器。
+ * Task 12A：与"重置位置"共用纯函数 computePetPlacement（同一停靠语义）。
  */
 function computeInitialPosition(): { x: number; y: number } {
-  const { workArea } = screen.getPrimaryDisplay()
-  return {
-    x: workArea.x + workArea.width - PET_WINDOW_WIDTH - PET_WINDOW_POSITION_MARGIN,
-    y: workArea.y + workArea.height - PET_WINDOW_HEIGHT - PET_WINDOW_POSITION_MARGIN
-  }
+  return computePetPlacement(
+    screen.getPrimaryDisplay().workArea,
+    PET_WINDOW_WIDTH,
+    PET_WINDOW_HEIGHT,
+    PET_WINDOW_POSITION_MARGIN
+  )
 }
 
 /**

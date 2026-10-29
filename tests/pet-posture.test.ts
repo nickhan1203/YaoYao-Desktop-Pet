@@ -22,7 +22,12 @@ import {
   POSTURE_FRAME_URLS,
   type PostureKind
 } from '../src/renderer/src/pet/pet-posture'
-import { CHARACTER_SCALE } from '../src/renderer/src/pet/pet-animation'
+import {
+  CHARACTER_SCALE,
+  FRONT_IDLE_SCALE,
+  resolveDisplayCommand
+} from '../src/renderer/src/pet/pet-animation'
+import type { PetVisualState } from '../src/shared/pet-visual-state'
 
 /** sit/lie 进入帧时长（manifest fps=7） */
 const FRAME_MS = 1000 / 7
@@ -42,12 +47,12 @@ function tick(controller: PetPostureController, totalMs: number, stepMs = 16): v
 }
 
 describe('配置与 manifest 一致性（素材包 v3）', () => {
-  it('帧 URL 按 manifest 帧序排列（sit-01..08、lie-01..08，v2 目录承载 v3 素材）', () => {
+  it('帧 URL 按 manifest 帧序排列（sit-01..08、lie-01..08，Task 11I 起使用 v3 front 正面素材）', () => {
     for (const kind of ['sit', 'lie'] as const) {
       const urls = POSTURE_FRAME_URLS[kind]
       expect(urls).toHaveLength(8)
       urls.forEach((url, index) => {
-        expect(url).toContain(`/v2/${kind}/${kind}-0${index + 1}.png`)
+        expect(url).toContain(`/v3/front/${kind}/${kind}-0${index + 1}.png`)
       })
     }
   })
@@ -300,34 +305,34 @@ describe('素材可用性降级与竞态（场景 16 / 17）', () => {
   })
 })
 
-describe('Task 11F-B：v3 素材画布适配（统一 0.625 缩放，无裁剪）', () => {
+describe('Task 11I：v3 front 正面素材画布适配（统一 FRONT_IDLE_SCALE 缩放，无裁剪）', () => {
   /**
-   * v3 side-right sit/lie 全部 8 帧的 alpha≥0.16 可见边界实测
-   * （Swift NSBitmapImageRep 像素扫描，512×512 画布坐标；
-   * 数据来源见任务报告——用于验证统一缩放下的显示适配）。
+   * v3 front sit/lie 全部 8 帧的 alpha≥0.16 可见边界实测
+   *（Node zlib PNG 解码像素扫描，512×512 画布坐标；
+   * 数据来源见任务报告——用于验证正面缩放下的显示适配）。
    */
   const V3_BOUNDS: Readonly<
     Record<PostureKind, readonly (readonly [number, number, number, number])[]>
   > = {
     sit: [
-      [70, 426, 140, 459],
-      [112, 426, 146, 459],
-      [111, 426, 157, 459],
-      [128, 427, 160, 459],
-      [123, 426, 160, 459],
-      [127, 426, 163, 459],
-      [127, 425, 160, 459],
-      [126, 426, 164, 459]
+      [29, 366, 23, 460],
+      [45, 366, 36, 459],
+      [43, 368, 53, 460],
+      [56, 375, 72, 459],
+      [78, 392, 66, 459],
+      [78, 390, 71, 460],
+      [78, 393, 69, 460],
+      [81, 390, 71, 460]
     ],
     lie: [
-      [152, 427, 148, 460],
-      [103, 429, 213, 459],
-      [105, 427, 244, 460],
-      [111, 426, 245, 460],
-      [126, 434, 245, 460],
-      [120, 438, 241, 460],
-      [125, 436, 247, 460],
-      [120, 437, 244, 460]
+      [129, 405, 73, 460],
+      [130, 368, 93, 460],
+      [136, 369, 148, 460],
+      [107, 372, 189, 460],
+      [72, 382, 165, 460],
+      [68, 378, 162, 460],
+      [74, 376, 169, 459],
+      [74, 379, 164, 459]
     ]
   }
 
@@ -337,8 +342,10 @@ describe('Task 11F-B：v3 素材画布适配（统一 0.625 缩放，无裁剪�
   /**
    * 素材像素坐标 → 240×240 显示画布坐标。
    * 与渲染层一致：X = 120 + scale×(x-256)，Y = 227.5 + scale×(y-464)。
+   * 姿态默认使用正面素材组缩放 FRONT_IDLE_SCALE（Task 11I）；
+   * walk 对照使用侧面 CHARACTER_SCALE（11E-v2 验收值）。
    */
-  function toDisplay(x: number, y: number, scale = CHARACTER_SCALE): [number, number] {
+  function toDisplay(x: number, y: number, scale = FRONT_IDLE_SCALE): [number, number] {
     return [120 + scale * (x - 256), 227.5 + scale * (y - 464)]
   }
 
@@ -357,11 +364,23 @@ describe('Task 11F-B：v3 素材画布适配（统一 0.625 缩放，无裁剪�
     }
   })
 
-  it('walk-01（对照基准）在同一缩放下的边距不小于 1px——walk 显示参数不回归', () => {
+  it('sit-01（进入起点）与正面待机帧同高：同一缩放下站立→坐姿衔接无大小跳变', () => {
+    // 正面待机 interaction-01 与 v3 front sit-01 可见高均为 438px
+    //（alpha 实测像素行计数：y 26..463 / 23..460），FRONT_IDLE_SCALE
+    // 下显示高一致。
+    const sit01 = V3_BOUNDS.sit[0]
+    const sitHeight = sit01[3] - sit01[2] + 1
+    const frontIdleHeight = 463 - 26 + 1
+    expect(sitHeight).toBe(438)
+    expect(frontIdleHeight).toBe(438)
+    expect(sitHeight * FRONT_IDLE_SCALE).toBeCloseTo(frontIdleHeight * FRONT_IDLE_SCALE, 6)
+  })
+
+  it('walk-01（对照基准）在侧面缩放下边距不小于 1px——walk 显示参数不回归', () => {
     const [minX, , minY] = WALK01_BOUNDS
     const [, maxY] = WALK01_BOUNDS
-    const [left, top] = toDisplay(minX, minY)
-    const [, bottom] = toDisplay(441, maxY)
+    const [left, top] = toDisplay(minX, minY, CHARACTER_SCALE)
+    const [, bottom] = toDisplay(441, maxY, CHARACTER_SCALE)
     expect(left).toBeGreaterThanOrEqual(1)
     expect(240 - left - 0.625 * (441 - 70)).toBeGreaterThanOrEqual(1)
     expect(top).toBeGreaterThanOrEqual(1)
@@ -369,7 +388,7 @@ describe('Task 11F-B：v3 素材画布适配（统一 0.625 缩放，无裁剪�
   })
 
   it('sit / lie 与 walk 接地一致：内容底边显示坐标与 walk-01 差 ≤ 1px', () => {
-    const walkBottom = toDisplay(256, 460)[1]
+    const walkBottom = toDisplay(256, 460, CHARACTER_SCALE)[1]
     for (const kind of ['sit', 'lie'] as const) {
       V3_BOUNDS[kind].forEach(([, , , maxY]) => {
         const bottom = toDisplay(256, maxY)[1]
@@ -378,27 +397,22 @@ describe('Task 11F-B：v3 素材画布适配（统一 0.625 缩放，无裁剪�
     }
   })
 
-  it('左右镜像不产生裁剪或出界：镜像包围盒（x→512−x）同样在画布内且边距 ≥ 2px', () => {
-    // 镜像由容器负 scaleX 围绕 x=256 翻转轴生成（与 walk 相同机制，
-    // 翻转轴穿过锚点，脚底参考点位置稳定）。side 视角内容中轴天然
-    // 偏离画布中心（素材特性，walk 同类），因此校验镜像后的显示适配
-    // 而非中轴重合。
-    for (const kind of ['sit', 'lie'] as const) {
-      V3_BOUNDS[kind].forEach(([minX, maxX, minY, maxY]) => {
-        const mirroredMinX = 512 - maxX
-        const mirroredMaxX = 512 - minX
-        const [left, top] = toDisplay(mirroredMinX, minY)
-        const [right, bottom] = toDisplay(mirroredMaxX, maxY)
-        expect(left).toBeGreaterThanOrEqual(2)
-        expect(240 - right).toBeGreaterThanOrEqual(2)
-        expect(top).toBeGreaterThanOrEqual(2)
-        expect(240 - bottom).toBeGreaterThanOrEqual(2)
-      })
+  it('正面素材不镜像：sitting/lying 显示命令 mirrored 恒为 false（Task 11I）', () => {
+    // 正面素材无方向语义，渲染层不随历史 facing 镜像（与 idle 一致）；
+    // 侧面素材的镜像包围盒适配校验随素材切换不再适用。
+    for (const kind of ['sitting', 'lying'] as const) {
+      for (const facing of ['left', 'right'] as const) {
+        const command = resolveDisplayCommand({ kind, facing } as PetVisualState)
+        expect(command.orientation).toBe('front')
+        expect(command.mirrored).toBe(false)
+        expect(command.scaleX).toBe(FRONT_IDLE_SCALE)
+      }
     }
   })
 
   it('统一缩放常量未被改动（0.625，walk 视觉参数保持 11E-v2 验收值）', () => {
     expect(CHARACTER_SCALE).toBe(0.625)
+    expect(FRONT_IDLE_SCALE).toBe(0.467)
   })
 })
 

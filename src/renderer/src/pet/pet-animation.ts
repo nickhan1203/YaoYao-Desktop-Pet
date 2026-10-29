@@ -2,8 +2,12 @@
  * 幺幺桌宠行走动画的纯逻辑层（可被 Vitest 直接测试，无 PixiJS/DOM 依赖）。
  *
  * 职责：
- * - 状态映射：主进程视觉状态 → 显示命令（idle 静态 / walk 循环动画 /
- *   run 循环动画，Task 11H）；
+ * - 状态映射：主进程视觉状态 → 显示命令（idle/paused 正面静态待机 /
+ *   sitting/lying 正面姿态素材基底（Task 11I 坐/趴面向用户）/
+ *   walk 循环动画 / run 循环动画，Task 11I / 11H）；
+ * - 朝向分离：facing（行为方向）与 orientation（显示素材朝向 front/side）
+ *   分离，正面素材组（idle/paused/sitting/lying）不随历史 facing 镜像
+ *   （Task 11I）；
  * - 朝向镜像：以素材脚底参考点为翻转轴，保证镜像前后脚底目标位置稳定；
  * - 帧序列与播放速度换算；
  * - 素材加载结果解析（部分失败的安全降级语义）；
@@ -30,6 +34,7 @@ import run05 from '../assets/pet/v2/run/run-05.png'
 import run06 from '../assets/pet/v2/run/run-06.png'
 import run07 from '../assets/pet/v2/run/run-07.png'
 import run08 from '../assets/pet/v2/run/run-08.png'
+import frontIdle01 from '../assets/pet/v4/front-idle-01.png'
 
 /**
  * v2 行走序列帧 URL（Task 11E-v2）。
@@ -74,6 +79,15 @@ export const RUN_FRAME_URLS: readonly string[] = [
  */
 export const IDLE_FRAME_URL: string = walk01
 
+/**
+ * 正面待机静态帧 URL（Task 11I）。
+ * 来源：yaoyao-animation-v4 frames/front/interaction/interaction-01.png
+ *（v4 素材包 interaction 序列的 01 帧即"待机"：正面面向用户、自然站立、
+ * 四爪着地、不迈步不坐卧）。作为静态帧兼用，不作为独立 idle 动画接入。
+ * 像素与素材包原帧完全一致（SHA256 校验），应用内仅做复制不改图。
+ */
+export const FRONT_IDLE_FRAME_URL: string = frontIdle01
+
 /** 行走动画目标帧率（帧/秒）：与素材包 manifest.json 的 walk fps=8 一致 */
 export const WALK_FPS = 8
 
@@ -90,6 +104,27 @@ export const TICKER_FPS = 60
  * 横向最大跨度 ±190px×0.625=237.5px ≤ 240 画布（两侧各余 1.25px）。
  */
 export const CHARACTER_SCALE = 0.625
+
+/**
+ * 正面素材组独立等比缩放（Task 11I；不改已验收的 walk/run 侧面缩放）。
+ * 适用于正面待机帧与 v3 front sit/lie 姿态帧（同一 character 容器缩放）。
+ *
+ * 计算依据（512×512 画布 alpha 实测）：
+ * - 正面待机 front/interaction-01：可见区 y 26..463，高 438px；沿用 0.625
+ *   时显示高 273.75px，顶部越过 240 画布 46px（227.5 − 0.625×438）→ 必须
+ *   独立缩放；
+ * - 取 0.467：显示高 438×0.467 ≈ 204.5px，与侧面 walk-01 的显示高度
+ *   （327×0.625 ≈ 204.4px）一致，切换 idle ⇄ 行走时整体大小无明显跳变；
+ * - 坐姿进入起点 v3 front sit-01 同为 438px 高 → 待机 ⇄ 坐下衔接无跳变；
+ *   sit-05（394px）/lie-01（388px）/lie-05（296px）更低，全部安全；
+ * - 顶部边距：待机 227.5 − 0.467×438 ≈ 23.0px（walk-01 为 21.25px），
+ *   sit-01 同为 ≈23px，其余姿态帧更大，均不溢出；
+ * - 脚底 maxY：待机 463、sit 459/460、lie 460，与统一锚点 y=464 相差
+ *   ≤ 1px（显示 ≈0.5px），接地高度稳定；
+ * - 脚底带中心 x：待机 ≈257.5、sit-05 ≈257.5（≈画布中心 256，爪部
+ *   水平居中），等比无拉伸。
+ */
+export const FRONT_IDLE_SCALE = 0.467
 
 /**
  * 脚底参考点（v2 素材 512×512 画布坐标）。
@@ -116,6 +151,9 @@ export function toAnimationSpeed(fps: number, tickerFps: number): number {
   return Math.max(fps, 0) / tickerFps
 }
 
+/** 显示素材朝向（Task 11I）：front = 正面待机帧（不镜像）；side = 侧面素材（随 facing 镜像） */
+export type DisplayOrientation = 'front' | 'side'
+
 /** 显示命令：角色容器的完整目标状态（由主进程视觉状态唯一决定） */
 export interface DisplayCommand {
   /** true 显示行走动画；false 显示静态 idle 或跑步 */
@@ -126,7 +164,9 @@ export interface DisplayCommand {
   showRun: boolean
   /** 跑步动画是否播放（当前实现中与 showRun 一致，保留语义位便于扩展） */
   runPlaying: boolean
-  /** 是否水平镜像（朝左） */
+  /** 显示素材朝向（Task 11I）：正面待机 / 侧面行为素材 */
+  orientation: DisplayOrientation
+  /** 是否水平镜像（朝左；仅 side 朝向有意义，front 恒为 false） */
   mirrored: boolean
   /** 角色容器位置（显示画布坐标） */
   positionX: number
@@ -138,41 +178,92 @@ export interface DisplayCommand {
 }
 
 /**
+ * Task 12B：用户宠物倍率（petScale）叠加到显示命令。
+ *
+ * 数学：倍率乘以命令的等比缩放（side 0.625 / front 0.467 各自的基础值，
+ * 不硬编码覆盖任何常量），并按脚底锚点公式重算容器位置——
+ * - positionX = FOOT_TARGET.x − scaleX′ × FOOT_REFERENCE.x
+ *   （scaleX 带镜像符号：镜像时为负，公式对镜像/非镜像统一成立）；
+ * - positionY = FOOT_TARGET.y − scaleY′ × FOOT_REFERENCE.y。
+ * 结果：脚底落点恒定、左右镜像稳定、正面/侧面切换无跳动；
+ * 等比无拉伸；非法倍率（非有限/非正）原样返回命令（防御）。
+ */
+export function scaleDisplayCommand(command: DisplayCommand, petScale: number): DisplayCommand {
+  if (typeof petScale !== 'number' || !Number.isFinite(petScale) || petScale <= 0) {
+    return command
+  }
+  if (petScale === 1) {
+    return command
+  }
+  const scaleX = command.scaleX * petScale
+  const scaleY = command.scaleY * petScale
+  return {
+    ...command,
+    scaleX,
+    scaleY,
+    positionX: FOOT_TARGET.x - scaleX * FOOT_REFERENCE.x,
+    positionY: FOOT_TARGET.y - scaleY * FOOT_REFERENCE.y
+  }
+}
+
+/**
  * 主进程视觉状态 → 显示命令。
  *
  * 状态映射（唯一行为依据）：
  * - walking → 循环播放 walk
  * - running → 循环播放 run（Task 11H；run 素材整组加载失败时由
  *   PetCanvas 回退播放 walk，本命令不感知素材可用性）
- * - idle / turning / paused / dragging → 静态 idle
+ * - idle / paused → 正面静态待机帧（Task 11I，不随历史 facing 镜像）
+ * - sitting / lying → 正面姿态素材（Task 11I 坐/趴面向用户：v3 front
+ *   sit/lie 帧由姿态层叠加播放，基底命令同样不镜像、使用正面缩放；
+ *   姿态素材加载失败时由姿态层回退基础 idle 显示）
+ * - turning / dragging → 侧面静态 idle 基底
+ *   （turning 为行走过渡期，运行时边界掉头已即时化、不再触达，
+ *   保守保持侧面避免闪烁；dragging 沿用已验收的拖动视觉）
  *
- * 朝向：所有素材默认朝右；facing left 时水平镜像，
- * up/down 暂用原始朝向（本阶段不新增对应方向动画）。
+ * 朝向（Task 11I，facing 与显示素材朝向分离）：
+ * - idle/paused/sitting/lying：orientation=front，恒不镜像（正面素材
+ *   无方向语义，不随历史 left/right facing 镜像）；
+ * - 其余状态：orientation=side，所有侧面素材默认朝右，facing left 时
+ *   水平镜像，up/down 暂用原始朝向（不新增对应方向动画）。
  *
  * 镜像数学：翻转轴穿过脚底参考点，使参考点在画布上的落点
  * 与非镜像时完全一致（脚底目标位置稳定）：
  * - 非镜像：position = FOOT_TARGET - scale × FOOT_REFERENCE
  * - 镜像：  position.x = FOOT_TARGET.x + scale × FOOT_REFERENCE.x
  *           （scaleX 为负，参考点 x 映射到 FOOT_TARGET.x）
+ *
+ * front 与 side 使用同一脚底参考点锚定，仅缩放不同
+ *（FRONT_IDLE_SCALE，见其注释）；front 组内的正面待机（438px 高）与
+ * 坐姿进入起点 sit-01（438px 高）同高，同一缩放下衔接无大小跳变；
+ * 切换时脚底落点不变、无上下跳动。
  */
 export function resolveDisplayCommand(state: PetVisualState | null): DisplayCommand {
   const showWalk = state !== null && state.kind === 'walking'
   const showRun = state !== null && state.kind === 'running'
-  const mirrored = state !== null && state.facing === 'left'
+  const frontFacing =
+    state === null ||
+    state.kind === 'idle' ||
+    state.kind === 'paused' ||
+    state.kind === 'sitting' ||
+    state.kind === 'lying'
+  const mirrored = !frontFacing && state !== null && state.facing === 'left'
+  const idleScale = frontFacing ? FRONT_IDLE_SCALE : CHARACTER_SCALE
   const positionX = mirrored
-    ? FOOT_TARGET.x + CHARACTER_SCALE * FOOT_REFERENCE.x
-    : FOOT_TARGET.x - CHARACTER_SCALE * FOOT_REFERENCE.x
-  const positionY = FOOT_TARGET.y - CHARACTER_SCALE * FOOT_REFERENCE.y
+    ? FOOT_TARGET.x + idleScale * FOOT_REFERENCE.x
+    : FOOT_TARGET.x - idleScale * FOOT_REFERENCE.x
+  const positionY = FOOT_TARGET.y - idleScale * FOOT_REFERENCE.y
   return {
     showWalk,
     walkPlaying: showWalk,
     showRun,
     runPlaying: showRun,
+    orientation: frontFacing ? 'front' : 'side',
     mirrored,
     positionX,
     positionY,
-    scaleX: mirrored ? -CHARACTER_SCALE : CHARACTER_SCALE,
-    scaleY: CHARACTER_SCALE
+    scaleX: mirrored ? -idleScale : idleScale,
+    scaleY: idleScale
   }
 }
 
@@ -183,6 +274,7 @@ export function isSameCommand(a: DisplayCommand, b: DisplayCommand): boolean {
     a.walkPlaying === b.walkPlaying &&
     a.showRun === b.showRun &&
     a.runPlaying === b.runPlaying &&
+    a.orientation === b.orientation &&
     a.mirrored === b.mirrored &&
     a.positionX === b.positionX &&
     a.positionY === b.positionY &&
@@ -215,11 +307,18 @@ export class PetDisplayController {
 export interface AssetLoadOutcome<T> {
   /** idle 帧（加载成功才有；失败时 renderer 降级为占位圆形） */
   idle: T | null
+  /** 正面待机帧（Task 11I；失败时 renderer 回退侧面 idle，不影响 walk/run/sit/lie） */
+  frontIdle: T | null
   /** walk 全部帧（全部成功才有；任一帧失败则整组降级为静态 idle） */
   walk: readonly T[] | null
   /** run 全部帧（Task 11H；全部成功才有；任一帧失败则整组为 null，
    * 渲染层跑步状态回退播放 walk 动画） */
   run: readonly T[] | null
+  /** 正面交互帧（Task 11J；任一帧失败整组为 null——点击/拎起/放下
+   * 动画不可用，交互降级为既有拖动行为，不影响其他素材） */
+  frontInteraction: readonly T[] | null
+  /** 侧面交互帧（Task 11J，side-right；同 frontInteraction 整组降级语义） */
+  sideInteraction: readonly T[] | null
   /** 失败资源的序号描述（供日志输出） */
   failures: string[]
 }
@@ -229,17 +328,29 @@ export interface AssetLoadOutcome<T> {
  * - walk 任一帧失败 → walk 整组为 null（安全降级，不部分播放）；
  * - run 任一帧失败 → run 整组为 null（Task 11H，同 walk 的整组降级语义；
  *   runResults 参数可省略，省略时 run 恒为 null——旧调用方兼容）；
- * - idle 失败 → idle 为 null（沿用占位圆形降级链）。
+ * - idle 失败 → idle 为 null（沿用占位圆形降级链）；
+ * - frontIdle 失败 → frontIdle 为 null（Task 11I，正面待机回退侧面
+ *   idle，不产生占位、不影响其余素材；frontResult 可省略——旧调用方兼容）；
+ * - front/side interaction 任一帧失败 → 对应组为 null（Task 11J，
+ *   交互动画不可用、真实拖动行为不受影响；参数可省略——旧调用方兼容）。
  */
 export function resolveAssetLoadOutcome<T>(
   idleResult: PromiseSettledResult<T>,
   walkResults: readonly PromiseSettledResult<T>[],
-  runResults?: readonly PromiseSettledResult<T>[]
+  runResults?: readonly PromiseSettledResult<T>[],
+  frontResult?: PromiseSettledResult<T>,
+  frontInteractionResults?: readonly PromiseSettledResult<T>[],
+  sideInteractionResults?: readonly PromiseSettledResult<T>[]
 ): AssetLoadOutcome<T> {
   const failures: string[] = []
   const idle = idleResult.status === 'fulfilled' ? idleResult.value : null
   if (idle === null) {
     failures.push('v2/walk/walk-01.png（idle 静止帧）')
+  }
+  const frontIdle =
+    frontResult !== undefined && frontResult.status === 'fulfilled' ? frontResult.value : null
+  if (frontResult !== undefined && frontIdle === null) {
+    failures.push('v4/front-idle-01.png（正面待机帧）')
   }
   const walk: T[] = []
   let walkComplete = true
@@ -265,10 +376,41 @@ export function resolveAssetLoadOutcome<T>(
   } else {
     runComplete = false
   }
+  const frontInteraction: T[] = []
+  let frontInteractionComplete = true
+  if (frontInteractionResults !== undefined) {
+    frontInteractionResults.forEach((result, index): void => {
+      if (result.status === 'fulfilled') {
+        frontInteraction.push(result.value)
+      } else {
+        frontInteractionComplete = false
+        failures.push(`v4/front/interaction/interaction-0${index + 1}.png`)
+      }
+    })
+  } else {
+    frontInteractionComplete = false
+  }
+  const sideInteraction: T[] = []
+  let sideInteractionComplete = true
+  if (sideInteractionResults !== undefined) {
+    sideInteractionResults.forEach((result, index): void => {
+      if (result.status === 'fulfilled') {
+        sideInteraction.push(result.value)
+      } else {
+        sideInteractionComplete = false
+        failures.push(`v4/side-right/interaction/interaction-0${index + 1}.png`)
+      }
+    })
+  } else {
+    sideInteractionComplete = false
+  }
   return {
     idle,
+    frontIdle,
     walk: walkComplete ? walk : null,
     run: runComplete && run.length > 0 ? run : null,
+    frontInteraction: frontInteractionComplete ? frontInteraction : null,
+    sideInteraction: sideInteractionComplete ? sideInteraction : null,
     failures
   }
 }

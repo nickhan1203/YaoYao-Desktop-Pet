@@ -12,8 +12,30 @@
  * 运行时已有的状态机事件，不绕过状态机。
  */
 
-/** 面板按钮命令（IPC 载荷；'resume-auto' 释放调试控制恢复自动决策） */
-export type DevDebugCommand = 'idle' | 'walk' | 'run' | 'sit' | 'lie' | 'resume-auto'
+/**
+ * 面板按钮命令（IPC 载荷；'resume-auto' 释放调试控制恢复自动决策）。
+ * Task 11I：'walk' 替换为方向化的 'walk-left' / 'walk-right'
+ *（面板左/右向行走预览，复用同一窄通道与白名单校验，无新增 IPC 通道）。
+ * Task 11J：'preview-click' / 'preview-pickup' / 'preview-release' 为
+ * 纯 renderer 交互动画预览（不触发行为状态机、不伪造 dragging）。
+ * Task 12B-UI：'open-settings' 打开设置窗口（开发工具，供自动化验收
+ * 与开发调试；仅开发构建注册 handler，生产环境为无操作）。
+ */
+export type DevDebugCommand =
+  | 'idle'
+  | 'walk-left'
+  | 'walk-right'
+  | 'run'
+  | 'sit'
+  | 'lie'
+  | 'resume-auto'
+  | 'preview-click'
+  | 'preview-pickup'
+  | 'preview-release'
+  | 'open-settings'
+
+/** 交互动画预览类型（主进程转发给桌宠 renderer 的载荷） */
+export type DevInteractionPreviewKind = 'click' | 'pickup' | 'release'
 
 /** 调试强制目标（行为运行时 debugForceBehavior 参数） */
 export type DebugBehaviorTarget = 'idle' | 'walking' | 'running' | 'sitting' | 'lying'
@@ -24,13 +46,24 @@ export const DEV_DEBUG_COMMAND_CHANNEL = 'pet:dev-debug-command'
 /** 调试状态查询通道（renderer → 主进程，invoke，返回 DevDebugState） */
 export const DEV_DEBUG_GET_STATE_CHANNEL = 'pet:dev-debug-get-state'
 
+/**
+ * 交互动画预览转发通道（主进程 → 桌宠 renderer，send，
+ * 载荷为 DevInteractionPreviewKind；仅开发构建注册发送逻辑）。
+ */
+export const DEV_INTERACTION_PREVIEW_CHANNEL = 'pet:dev-interaction-preview'
+
 const DEV_DEBUG_COMMANDS: ReadonlySet<DevDebugCommand> = new Set([
   'idle',
-  'walk',
+  'walk-left',
+  'walk-right',
   'run',
   'sit',
   'lie',
-  'resume-auto'
+  'resume-auto',
+  'preview-click',
+  'preview-pickup',
+  'preview-release',
+  'open-settings'
 ])
 
 /**
@@ -57,4 +90,11 @@ export function isDevDebugState(payload: unknown): payload is DevDebugState {
     payload !== null &&
     typeof (payload as { debugControlled?: unknown }).debugControlled === 'boolean'
   )
+}
+
+/** 校验交互动画预览转发载荷（白名单字符串，其余拒绝） */
+export function isDevInteractionPreviewKind(
+  payload: unknown
+): payload is DevInteractionPreviewKind {
+  return payload === 'click' || payload === 'pickup' || payload === 'release'
 }

@@ -18,12 +18,17 @@ import { isDevDebugState, type DevDebugCommand } from '../../../shared/dev-debug
  */
 
 const COMMAND_BUTTONS: ReadonlyArray<{ command: DevDebugCommand; label: string }> = [
-  { command: 'idle', label: '站立/待机' },
-  { command: 'walk', label: '行走' },
+  { command: 'idle', label: '站立/待机（正面）' },
+  { command: 'walk-left', label: '左向行走' },
+  { command: 'walk-right', label: '右向行走' },
   { command: 'run', label: '跑步' },
   { command: 'sit', label: '坐下' },
   { command: 'lie', label: '趴卧' },
-  { command: 'resume-auto', label: '恢复自动行为' }
+  { command: 'preview-click', label: '点击反馈预览' },
+  { command: 'preview-pickup', label: '拎起预览' },
+  { command: 'preview-release', label: '放下预览' },
+  { command: 'resume-auto', label: '恢复自动行为' },
+  { command: 'open-settings', label: '打开设置窗口' }
 ]
 
 const POLL_INTERVAL_MS = 500
@@ -116,7 +121,9 @@ export function DevBehaviorPanel(): React.JSX.Element {
         ))}
       </div>
       <p className="dev-panel-note">
-        主进程为行为与窗口运动唯一权威；调试命令经白名单窄 IPC 触发真实状态机转换。
+        主进程为行为与窗口运动唯一权威；调试命令经白名单窄 IPC 触发真实状态机转换。 「点击反馈 /
+        拎起 / 放下预览」为纯 renderer 交互动画预览（不触发行为状态机、 不伪造
+        dragging）；真实拖动需用鼠标实际操作桌宠。「打开设置窗口」复用托盘菜单的同一主进程入口（开发工具，供自动化验收）。
       </p>
     </section>
   )

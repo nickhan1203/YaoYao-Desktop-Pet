@@ -8,16 +8,22 @@
  *   立即中断），保证快速切换不闪烁、不重置到错误帧；
  * - 帧时序由素材包 manifest.json 驱动：sit/lie fps=7（loop=false）。
  *
- * 素材（Task 11F-B 起使用 yaoyao-animation-v3 的 side-right sit/lie）：
+ * 素材（Task 11I 起使用 yaoyao-animation-v3 的 front sit/lie，正面面向用户）：
+ * - 坐/趴为无主动移动的静止动作，与正面待机一致面向用户；正面帧不随
+ *   历史 facing 镜像（渲染层 sitting/lying 显示命令 orientation=front）；
  * - v3 已做尺寸归一（delivery-check: size_normalized / no_export_clipping），
- *   像素实测 halfW ≤ 186、minY ≥ 140，与 walk-01 一致，统一 0.625 缩放下
- *   240×240 画布内完整显示（左右边距 ≥ 3.75px，顶部 ≥ 25px），无裁剪，
- *   不需要动作级缩放；
- * - sit 进入/退出使用完整序列 01..05（v2 中跳过帧 01 的偏差随 v3 消除）；
+ *   alpha 实测：front sit-01 可见高 438px（与正面待机 interaction-01 一致，
+ *   同一 FRONT_IDLE_SCALE 下站立→坐姿衔接无大小跳变）、sit-05 高 394px、
+ *   lie-01 高 388px、lie-05 高 296px，脚底 maxY 均为 459/460（统一锚点
+ *   y=464 接地稳定）；0.467 缩放下全部帧在 240×240 画布内完整显示
+ *   （顶部边距 ≥ 21px），无裁剪，不需要动作级缩放；
+ * - 帧序列结构与 side-right 版本完全同构（transition 01..05 正向、
+ *   hold [05,07,05] 眨眼、reverse 05→01），仅素材方向不同；
+ * - sit 进入/退出使用完整序列 01..05；
  * - hold：sit/lie 均使用 [05,07,05] + [1800,110,1400]（含眨眼）。
  *   注：v3 manifest 中 lie hold 为单帧 [05]×2000（无眨眼），经用户验收
  *   确认保留 v2 的眨眼循环（有记录的 manifest 偏差）；
- * - 帧 06/08 为备用姿态，不使用。
+ * - 帧 06/08 为备用姿态，不使用（07 为 hold 眨眼帧）。
  *
  * 与视觉状态的关系：本控制器是 renderer 内部能力，真实主进程视觉状态
  * 优先级更高（walking/dragging 等非 idle 状态时由 PetCanvas 调用
@@ -25,22 +31,22 @@
  * 设置纹理与可见性。
  */
 
-import sit01 from '../assets/pet/v2/sit/sit-01.png'
-import sit02 from '../assets/pet/v2/sit/sit-02.png'
-import sit03 from '../assets/pet/v2/sit/sit-03.png'
-import sit04 from '../assets/pet/v2/sit/sit-04.png'
-import sit05 from '../assets/pet/v2/sit/sit-05.png'
-import sit06 from '../assets/pet/v2/sit/sit-06.png'
-import sit07 from '../assets/pet/v2/sit/sit-07.png'
-import sit08 from '../assets/pet/v2/sit/sit-08.png'
-import lie01 from '../assets/pet/v2/lie/lie-01.png'
-import lie02 from '../assets/pet/v2/lie/lie-02.png'
-import lie03 from '../assets/pet/v2/lie/lie-03.png'
-import lie04 from '../assets/pet/v2/lie/lie-04.png'
-import lie05 from '../assets/pet/v2/lie/lie-05.png'
-import lie06 from '../assets/pet/v2/lie/lie-06.png'
-import lie07 from '../assets/pet/v2/lie/lie-07.png'
-import lie08 from '../assets/pet/v2/lie/lie-08.png'
+import sit01 from '../assets/pet/v3/front/sit/sit-01.png'
+import sit02 from '../assets/pet/v3/front/sit/sit-02.png'
+import sit03 from '../assets/pet/v3/front/sit/sit-03.png'
+import sit04 from '../assets/pet/v3/front/sit/sit-04.png'
+import sit05 from '../assets/pet/v3/front/sit/sit-05.png'
+import sit06 from '../assets/pet/v3/front/sit/sit-06.png'
+import sit07 from '../assets/pet/v3/front/sit/sit-07.png'
+import sit08 from '../assets/pet/v3/front/sit/sit-08.png'
+import lie01 from '../assets/pet/v3/front/lie/lie-01.png'
+import lie02 from '../assets/pet/v3/front/lie/lie-02.png'
+import lie03 from '../assets/pet/v3/front/lie/lie-03.png'
+import lie04 from '../assets/pet/v3/front/lie/lie-04.png'
+import lie05 from '../assets/pet/v3/front/lie/lie-05.png'
+import lie06 from '../assets/pet/v3/front/lie/lie-06.png'
+import lie07 from '../assets/pet/v3/front/lie/lie-07.png'
+import lie08 from '../assets/pet/v3/front/lie/lie-08.png'
 
 /** 姿态类型 */
 export type PostureKind = 'sit' | 'lie'

@@ -1,5 +1,6 @@
 import { lazy } from 'react'
 import PetCanvas from './pet/PetCanvas'
+import { SettingsPanel } from './pet/SettingsPanel'
 import { PET_WINDOW_TITLE } from '../../shared/pet-config'
 
 /**
@@ -16,7 +17,19 @@ const DevBehaviorPanel =
     ? lazy(() => import('./pet/DevBehaviorPanel').then((m) => ({ default: m.DevBehaviorPanel })))
     : null
 
+/**
+ * 设置窗口路由（Task 12B，正式用户功能，生产构建同样生效）：
+ * 主进程创建的设置窗口加载 `#settings` 哈希，挂载 SettingsPanel；
+ * 桌宠窗口（无该哈希）照常渲染 PetCanvas。
+ */
 function App(): React.JSX.Element {
+  if (window.location.hash === '#settings') {
+    return (
+      <main className="app" aria-label="幺幺设置">
+        <SettingsPanel />
+      </main>
+    )
+  }
   if (DevBehaviorPanel !== null) {
     return (
       <main className="app" aria-label="幺幺开发调试面板">

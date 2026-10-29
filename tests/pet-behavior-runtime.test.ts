@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   PetBehaviorRuntime,
+  LANDING_GUARD_SEC,
   REST_EXIT_GUARD_SEC,
   normalizeHorizontalDirection,
   type RuntimeConfig,
@@ -361,9 +362,14 @@ describe('暂停与拖动', () => {
     h.win.teleport(600, 400)
     h.runtime.handleDragEnd()
     expect(h.runtime.currentState.kind).toBe('walking')
-    h.tick(1400)
+    // Task 11J 落地保护期内（0.48s）窗口静止：既不跳回 (106, 100) 也不提前移动
+    for (let t = 1400; t <= 1700; t += 100) {
+      h.tick(t)
+    }
+    expect(h.win.getPosition()).toEqual({ x: 600, y: 400 })
+    // 保护期满后从 (600, 400) 继续向右走 6px，而不是跳回 (106, 100) 附近
+    h.tick(1800)
     const last = h.win.setPositionCalls[h.win.setPositionCalls.length - 1]
-    // 从 (600, 400) 继续向右走 6px，而不是跳回 (106, 100) 附近
     expect(last.x).toBe(606)
     expect(last.y).toBe(400)
   })
@@ -1362,8 +1368,10 @@ describe('Task 11H-B：边界立即掉头专项', () => {
     // 拖动结束即校准朝向（恢复的 walking 原朝向 right 指向不可移动侧）
     expect(h.runtime.currentState.kind).toBe('walking')
     expect(h.runtime.currentVisualState.facing).toBe('left')
-    // 恢复行走的第一个 tick 就向界内移动
-    h.tick(1400)
+    // Task 11J 落地保护期内静止；期满恢复行走的第一个 tick 就向界内移动
+    for (let t = 1300; t <= 1700; t += 100) {
+      h.tick(t)
+    }
     expect(win.getPosition().x).toBe(1674)
     expect(win.getPosition().y).toBe(100)
   })
@@ -1454,6 +1462,34 @@ describe('Task 11H-C：调试控制接口（开发面板按钮 → 主进程权�
     expect(h.runtime.isDebugControlled).toBe(true)
   })
 
+  it('Task 11I：debugForceBehavior 显式指定行走朝向（面板左/右向行走预览）', () => {
+    const h = makeRuntime({ config: DEBUG_CONFIG })
+    h.runtime.start()
+    h.runtime.debugForceBehavior('walking', 'left')
+    expect(h.runtime.currentState.kind).toBe('walking')
+    expect(h.runtime.currentVisualState.facing).toBe('left')
+    // 从左向行走强制切换右向：经 startIdle 回待机后重新进入 walking
+    h.runtime.debugForceBehavior('walking', 'right')
+    expect(h.runtime.currentState.kind).toBe('walking')
+    expect(h.runtime.currentVisualState.facing).toBe('right')
+    // 省略 facing：沿用当前方向（与 11H-C 语义一致）
+    h.runtime.debugForceBehavior('walking')
+    expect(h.runtime.currentVisualState.facing).toBe('right')
+  })
+
+  it('Task 11I：指定左向后窗口真实向左移动（facing 经状态机落位）', () => {
+    const win = new FakeWindow(600, 100)
+    const h = makeRuntime({ window: win, config: DEBUG_CONFIG })
+    h.runtime.start()
+    h.runtime.debugForceBehavior('walking', 'left')
+    for (let t = 100; t <= 600; t += 100) {
+      h.tick(t)
+    }
+    // 0.6s × 60px/s = 36px 向左
+    expect(win.getPosition().x).toBe(564)
+    expect(win.getPosition().y).toBe(100)
+  })
+
   it('调试控制期间窗口真实移动（walking 以 60px/s 推进，X 变化 Y 不变）', () => {
     const win = new FakeWindow(100, 100)
     const h = makeRuntime({ window: win, config: DEBUG_CONFIG })
@@ -1536,7 +1572,12 @@ describe('Task 11H-C：调试控制接口（开发面板按钮 → 主进程权�
     // 调试模式仍生效：恢复 walking 继续真实移动（新轨道）
     expect(h.runtime.currentState.kind).toBe('walking')
     expect(h.runtime.isDebugControlled).toBe(true)
+    // Task 11J 落地保护期内静止；期满恢复移动（新轨道）
     h.tick(600)
+    expect(win.getPosition()).toEqual({ x: 300, y: 300 })
+    for (let t = 700; t <= 1000; t += 100) {
+      h.tick(t)
+    }
     expect(win.getPosition().x).toBe(306)
     expect(win.getPosition().y).toBe(300)
   })
@@ -1617,7 +1658,380 @@ describe('Task 11H-C：调试控制接口（开发面板按钮 → 主进程权�
     expect(broadcasts).toContainEqual({ kind: 'running', facing: 'right' })
     expect(broadcasts).toContainEqual({ kind: 'running', facing: 'left' })
   })
+})
 
+describe('Task 11J：落地保护（放下动画期间窗口静止）', () => {
+  /**
+   * 放下过渡动画总时长：07→08→01 = 140+180+160 = 480ms。
+   * 落地保护须 ≥ 该时长，且超时自动恢复（renderer 出错不永久停住）。
+   */
+  const DROP_ANIMATION_SEC = 0.48
+
+  /** 0.1s 步进推进到指定时刻 */
+  function step(h: Harness, fromMs: number, toMs: number): void {
+    for (let t = fromMs; t <= toMs; t += 100) {
+      h.tick(t)
+    }
+  }
+
+  it('落地保护时长覆盖放下动画总时长（0.48s ≥ 480ms）', () => {
+    expect(LANDING_GUARD_SEC).toBeGreaterThanOrEqual(DROP_ANIMATION_SEC)
+  })
+
+  it('DRAG_END 恢复 walking 后保护期内窗口静止，期满恢复移动', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    h.tick(1300) // 行走中：位置 (112, 100)
+    h.runtime.handleDragStart()
+    win.teleport(600, 400)
+    h.runtime.handleDragEnd()
+    expect(h.runtime.currentState.kind).toBe('walking')
+    const callsAtDrop = win.setPositionCalls.length
+    // 保护期 0.48s：t=1400..1700 共 0.4s 内窗口静止
+    step(h, 1400, 1700)
+    expect(h.runtime.currentState.kind).toBe('walking')
+    expect(win.setPositionCalls.length).toBe(callsAtDrop)
+    expect(win.getPosition()).toEqual({ x: 600, y: 400 })
+    // t=1800：累计 0.5s > 0.48s，保护期满恢复移动（60px/s × 0.1s = 6px）
+    h.tick(1800)
+    expect(win.setPositionCalls.length).toBe(callsAtDrop + 1)
+    const last = win.setPositionCalls[win.setPositionCalls.length - 1]
+    expect(last.x).toBe(606)
+    expect(last.y).toBe(400)
+  })
+
+  it('保护期内状态机与决策照常：行为时长到期不被保护拖延', () => {
+    // 行走 0.4s 到期（< 保护 0.48s）：拖动结束重置计时后，
+    // 保护期内的行走计时照常累积，到期回 idle（决策不被保护拖延）。
+    const config = {
+      decider: { ...FAST_CONFIG.decider, walkDurationSec: { minSec: 0.4, maxSec: 0.4 } }
+    }
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win, config })
+    advanceToWalking(h)
+    h.runtime.handleDragStart()
+    win.teleport(600, 400)
+    h.runtime.handleDragEnd()
+    const callsAtDrop = win.setPositionCalls.length
+    // 行走 0.4s（浮点累加 4 tick）到期回 idle；此后 idle 亦不移动
+    step(h, 1400, 2200)
+    expect(h.runtime.currentState.kind).toBe('idle')
+    expect(win.setPositionCalls.length).toBe(callsAtDrop)
+  })
+
+  it('保护期内再次 DRAG_START 清零：放下途中重新抓取不被拖延', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    h.tick(1300)
+    h.runtime.handleDragStart()
+    win.teleport(600, 400)
+    h.runtime.handleDragEnd()
+    // 保护期消耗 0.2s（剩余 0.28s）时再次抓起
+    step(h, 1400, 1500)
+    h.runtime.handleDragStart()
+    win.teleport(700, 500)
+    h.runtime.handleDragEnd() // 保护重新计时 0.48s
+    const callsAtSecondDrop = win.setPositionCalls.length
+    // 第二次放下后 0.3s：若未重新计时（剩余仅 0.08s 已过期）会移动；
+    // 重新计时后 0.3s < 0.48s 仍静止
+    step(h, 1600, 1900)
+    expect(win.setPositionCalls.length).toBe(callsAtSecondDrop)
+    expect(win.getPosition()).toEqual({ x: 700, y: 500 })
+    // 期满（再 0.2s，累计 0.5s）恢复移动
+    h.tick(2000)
+    expect(win.setPositionCalls.length).toBe(callsAtSecondDrop + 1)
+    expect(win.getPosition().x).toBe(706)
+  })
+
+  it('paused / dragging 期间保护计时冻结（恢复后按剩余时长继续）', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    h.tick(1300)
+    h.runtime.handleDragStart()
+    win.teleport(600, 400)
+    h.runtime.handleDragEnd()
+    // 保护期消耗 0.2s（剩余 0.28s）后暂停 5s：冻结不流逝
+    step(h, 1400, 1500)
+    h.runtime.pause()
+    step(h, 1600, 6500)
+    expect(h.runtime.currentState.kind).toBe('paused')
+    h.runtime.resume()
+    expect(h.runtime.currentState.kind).toBe('walking')
+    const callsAtResume = win.setPositionCalls.length
+    // 恢复后 0.2s：剩余 0.28s 未耗尽，仍静止
+    step(h, 6600, 6700)
+    expect(win.setPositionCalls.length).toBe(callsAtResume)
+    // 再 0.1s（累计 0.3s > 0.28s）恢复移动
+    h.tick(6800)
+    expect(win.setPositionCalls.length).toBeGreaterThan(callsAtResume)
+  })
+
+  it('DRAG_END 恢复 idle 时无保护副作用：后续行走正常立即移动', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    // 拖动中断初始 idle：结束后回 idle（保护计时照常递减但 idle 本不移动）
+    h.runtime.start()
+    h.tick(500)
+    h.runtime.handleDragStart()
+    win.teleport(600, 400)
+    h.runtime.handleDragEnd()
+    expect(h.runtime.currentState.kind).toBe('idle')
+    // idle 1s（> 保护 0.48s）：拖动结束重置计时，约 1.1s 后（t≈1600）
+    // 开始行走，t=1700 即移动（保护早已过期，行走不受拖延）
+    step(h, 600, 1700)
+    expect(h.runtime.currentState.kind).toBe('walking')
+    expect(win.setPositionCalls.length).toBeGreaterThan(0)
+    const last = win.setPositionCalls[win.setPositionCalls.length - 1]
+    expect(last.y).toBe(400)
+    expect(last.x).toBeGreaterThan(600)
+  })
+})
+
+describe('Task 12A：外部位移同步（重置位置/显示边界修正）', () => {
+  it('外部移动窗口后同步基准：行走从新位置推进，不拉回旧位置', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    h.tick(1300) // 行走中：内部基准 (112, 100)
+    // 外部（重置位置）移动窗口并通知运行时
+    win.teleport(800, 500)
+    h.runtime.handleExternalPositionChange()
+    // 下一个行走 tick 从新位置向右推进 6px，新 Y 即新的水平轨道
+    h.tick(1400)
+    expect(win.getPosition()).toEqual({ x: 806, y: 500 })
+  })
+})
+
+describe('Task 12B：运行时动态配置（applyRuntimeConfig）', () => {
+  /** 0.1s 步进推进 */
+  function step(h: Harness, fromMs: number, toMs: number): void {
+    for (let t = fromMs; t <= toMs; t += 100) {
+      h.tick(t)
+    }
+  }
+
+  it('行走速度动态更新：下一个 movement tick 即用新值（无需重启）', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    h.tick(1300) // 60px/s × 0.1s = 6px/tick → (112, 100)
+    h.runtime.applyRuntimeConfig({ walkSpeedPxPerSec: 120, runSpeedPxPerSec: 192 })
+    h.tick(1400) // 120px/s × 0.1s = 12px/tick
+    expect(win.getPosition()).toEqual({ x: 124, y: 100 })
+  })
+
+  it('更新配置不重置当前行为与计时（行走中更新不产生意外移动/转换）', () => {
+    const config = {
+      decider: { ...FAST_CONFIG.decider, walkDurationSec: { minSec: 2, maxSec: 2 } }
+    }
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win, config })
+    advanceToWalking(h)
+    h.tick(1300) // 行走 0.2s
+    h.runtime.applyRuntimeConfig({ walkSpeedPxPerSec: 90 })
+    step(h, 1400, 1800) // 累计 0.7s < 2s：仍行走
+    expect(h.runtime.currentState.kind).toBe('walking')
+    // 90px/s × 0.1s = 9px/tick
+    expect(win.getPosition().x).toBe(112 + 5 * 9)
+  })
+
+  it('非法速度参数被拒绝（防御：不产生 0/负/NaN 速度）', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    h.runtime.applyRuntimeConfig({ walkSpeedPxPerSec: 0 })
+    h.runtime.applyRuntimeConfig({ runSpeedPxPerSec: Number.NaN })
+    h.tick(1300)
+    expect(win.getPosition().x).toBe(112) // 仍为默认 60px/s × 0.1s = 6px
+  })
+
+  it('冷却收紧：剩余冷却超过新上限时立即收紧（调低频率立即可感知）', () => {
+    const config = {
+      decider: {
+        ...FAST_CONFIG.decider,
+        walkDurationSec: { minSec: 1, maxSec: 1 },
+        runDurationSec: { minSec: 2, maxSec: 2 },
+        runCooldownSec: 10,
+        runChance: 1
+      }
+    }
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win, config })
+    h.runtime.start()
+    // t≈3000（idle/walk 交替中，冷却剩余 10−3=7s，未起跑）
+    step(h, 100, 3000)
+    expect(h.runtime.currentState.kind).not.toBe('running')
+    // 收紧到 3s：剩余立即变 3s → t≈6000 冷却归零，下一次行走到期（t≈6600）起跑
+    h.runtime.applyRuntimeConfig({
+      decider: { ...config.decider, runCooldownSec: 3 }
+    })
+    step(h, 3100, 6600)
+    expect(h.runtime.currentState.kind).toBe('running')
+  })
+
+  it('冷却收紧不延长：新上限更大时剩余冷却保持（不重置决策节奏）', () => {
+    const config = {
+      decider: {
+        ...FAST_CONFIG.decider,
+        walkDurationSec: { minSec: 1, maxSec: 1 },
+        runDurationSec: { minSec: 2, maxSec: 2 },
+        runCooldownSec: 10,
+        runChance: 1
+      }
+    }
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win, config })
+    h.runtime.start()
+    step(h, 100, 3000)
+    // 上限调大到 60s：剩余 7s 不被延长 → t≈10000 冷却归零，t≈11000 起跑
+    h.runtime.applyRuntimeConfig({
+      decider: { ...config.decider, runCooldownSec: 60 }
+    })
+    step(h, 3100, 10900)
+    expect(h.runtime.currentState.kind).not.toBe('running')
+    h.tick(11000)
+    expect(h.runtime.currentState.kind).toBe('running')
+  })
+})
+
+describe('Task 12B：自动活动开关（setAutoActivityEnabled）', () => {
+  function step(h: Harness, fromMs: number, toMs: number): void {
+    for (let t = fromMs; t <= toMs; t += 100) {
+      h.tick(t)
+    }
+  }
+
+  it('关闭：当前行走经状态机安全回到 idle（不产生自主移动）', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    h.tick(1300)
+    expect(h.runtime.currentState.kind).toBe('walking')
+    h.runtime.setAutoActivityEnabled(false)
+    expect(h.runtime.currentState.kind).toBe('idle')
+    const calls = win.setPositionCalls.length
+    step(h, 1400, 6000)
+    expect(h.runtime.currentState.kind).toBe('idle')
+    expect(win.setPositionCalls.length).toBe(calls)
+  })
+
+  it('关闭：休息中（sitting）安全回到 idle（不直跳 lying，起身语义正常）', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    h.runtime.debugForceBehavior('sitting')
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    h.runtime.setAutoActivityEnabled(false)
+    expect(h.runtime.currentState.kind).toBe('idle')
+  })
+
+  it('关闭期间决策跳过：长时间不出现任何自主行为', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    h.runtime.start()
+    h.runtime.setAutoActivityEnabled(false)
+    step(h, 100, 15000)
+    expect(['idle', 'paused', 'dragging']).toContain(h.runtime.currentState.kind)
+    expect(win.setPositionCalls).toHaveLength(0)
+  })
+
+  it('关闭后鼠标交互不受影响：拖动/放下照常，结束回 idle 不自行恢复行走', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    h.runtime.setAutoActivityEnabled(false)
+    step(h, 100, 500)
+    h.runtime.handleDragStart()
+    expect(h.runtime.currentState.kind).toBe('dragging')
+    win.teleport(600, 400)
+    h.runtime.handleDragEnd()
+    expect(h.runtime.currentState.kind).toBe('idle')
+    step(h, 600, 2000)
+    expect(h.runtime.currentState.kind).toBe('idle')
+    expect(win.getPosition()).toEqual({ x: 600, y: 400 })
+  })
+
+  it('拖动中关闭：标志记录，拖动结束恢复的行走由 tick 自愈回 idle', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    h.runtime.handleDragStart() // restore = walking
+    h.runtime.setAutoActivityEnabled(false) // dragging 中仅记录
+    expect(h.runtime.currentState.kind).toBe('dragging')
+    win.teleport(600, 400)
+    h.runtime.handleDragEnd()
+    expect(h.runtime.currentState.kind).toBe('walking') // 恢复拖动前状态
+    h.tick(1400) // tick 自愈 → idle，无移动
+    expect(h.runtime.currentState.kind).toBe('idle')
+    expect(win.getPosition()).toEqual({ x: 600, y: 400 })
+  })
+
+  it('暂停中关闭：恢复（继续活动）不绕过自动活动偏好（自愈回 idle）', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    h.runtime.pause() // restore = walking
+    h.runtime.setAutoActivityEnabled(false)
+    expect(h.runtime.currentState.kind).toBe('paused')
+    h.runtime.resume() // 恢复拖动前 walking
+    expect(h.runtime.currentState.kind).toBe('walking')
+    h.tick(1400) // 自愈 → idle
+    expect(h.runtime.currentState.kind).toBe('idle')
+    expect(h.runtime.isAutoActivityEnabled).toBe(false)
+  })
+
+  it('重新开启：行为从 idle 自然恢复（不因禁用期间计时立即触发转换）', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    h.runtime.start()
+    h.runtime.setAutoActivityEnabled(false)
+    step(h, 100, 5000)
+    h.runtime.setAutoActivityEnabled(true)
+    expect(h.runtime.currentState.kind).toBe('idle')
+    step(h, 5100, 6200) // 重置计时后约 1.1s 进入行走
+    expect(h.runtime.currentState.kind).toBe('walking')
+    expect(win.getPosition().x).toBeGreaterThan(100)
+  })
+
+  it('重复开关幂等（不重复转换/不抛异常）', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h)
+    h.runtime.setAutoActivityEnabled(false)
+    h.runtime.setAutoActivityEnabled(false)
+    expect(h.runtime.currentState.kind).toBe('idle')
+    h.runtime.setAutoActivityEnabled(true)
+    h.runtime.setAutoActivityEnabled(true)
+    expect(h.runtime.isAutoActivityEnabled).toBe(true)
+  })
+
+  it('与用户暂停语义独立：暂停/继续不改自动活动偏好', () => {
+    const win = new FakeWindow(100, 100)
+    const h = makeRuntime({ window: win })
+    h.runtime.setAutoActivityEnabled(false)
+    h.runtime.pause()
+    h.runtime.resume()
+    expect(h.runtime.isAutoActivityEnabled).toBe(false)
+    expect(h.runtime.currentState.kind).toBe('idle')
+  })
+
+  it('水平轨道与边界反转不受配置更新影响（更新不破坏掉头）', () => {
+    const win = new FakeWindow(1674, 100)
+    const h = makeRuntime({ window: win })
+    advanceToWalking(h) // 60px/s：t=1200 行至右边界 1680 → 立即掉头
+    expect(h.runtime.currentState.kind).toBe('walking')
+    expect(h.runtime.currentVisualState.facing).toBe('left')
+    expect(win.getPosition().x).toBe(1680)
+    h.runtime.applyRuntimeConfig({ walkSpeedPxPerSec: 120 })
+    h.tick(1300) // 120px/s × 0.1s = 12px 向左 → 1668（远离左边界）
+    expect(h.runtime.currentState.kind).toBe('walking')
+    expect(h.runtime.currentVisualState.facing).toBe('left')
+    expect(win.getPosition().x).toBe(1668)
+  })
+})
+
+describe('Task 11H-C：调试控制接口（补充：跑步频率统计）', () => {
   it('Task 11H-C：默认参数下跑步频率显著提高（模拟统计，注入时钟与随机）', () => {
     // LCG 伪随机（确定性可复现），相同种子下对比新旧参数
     const makeRandom = (seed: number): RandomSource => {

@@ -1,0 +1,453 @@
+/**
+ * 幺幺设置面板样式（Task 12B-UI，Modern Minimal Cards）。
+ *
+ * 作用域约束（关键）：所有选择器均以 .settings-app 开头——该根类只在
+ * 设置窗口渲染（App.tsx 的 #settings 路由），同一份 CSS 进入桌宠窗口
+ * bundle 时不会命中任何元素，透明桌宠背景不受影响（body 保持全局
+ * transparent 规则，见 main.css）。
+ *
+ * 主题：prefers-color-scheme 自动切换浅色/深色（CSS variables 定义在
+ * .settings-app 作用域，不新增持久化字段）。
+ * 动效：仅开关滑块/分段选中/hover/focus 的轻量过渡（120–160ms），
+ * 尊重 prefers-reduced-motion。
+ */
+
+.settings-app {
+  /* 浅色主题 tokens（建议色值，统一维护） */
+  --bg: #f6f7f9;
+  --card-bg: #ffffff;
+  --text-primary: #20242a;
+  --text-secondary: #737b87;
+  --border: #e8ebf0;
+  --accent: #6789c6;
+  --accent-soft: #eef2fa;
+  --track: #e3e7ee;
+  --danger: #b3554d;
+  --danger-soft: #f9eceb;
+  --focus-ring: rgba(103, 137, 198, 0.45);
+
+  /* spacing tokens */
+  --page-padding: 20px;
+  --card-radius: 14px;
+  --card-padding: 16px;
+  --card-gap: 12px;
+  --field-gap: 14px;
+
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: var(--page-padding);
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  overflow: hidden;
+}
+
+@media (prefers-color-scheme: dark) {
+  .settings-app {
+    --bg: #1e2126;
+    --card-bg: #272b31;
+    --text-primary: #e8eaee;
+    --text-secondary: #9aa2ad;
+    --border: #33383f;
+    --accent: #7d9bd8;
+    --accent-soft: #2e3542;
+    --track: #3a4048;
+    --danger: #d07f77;
+    --danger-soft: #3a2d2c;
+    --focus-ring: rgba(125, 155, 216, 0.5);
+  }
+}
+
+/* ---------- 滚动内容区 ---------- */
+
+.settings-scroll {
+  position: relative; /* 绝对定位的视觉隐藏 radio 以此为包含块，溢出被本容器裁剪 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--card-gap);
+  scrollbar-width: thin;
+}
+
+.settings-loading {
+  margin: auto;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* ---------- 卡片 ---------- */
+
+.settings-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding);
+  flex: none;
+}
+
+.settings-card-title {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-card-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.settings-card-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-card-state {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* Task 12C：卡片内相邻行间距（窗口与交互卡两行共用同一横排模式） */
+.settings-card-row + .settings-card-row {
+  margin-top: var(--field-gap);
+}
+
+/* Task 12C：卡片标题与首行间距（与字段间距同一 token，标题不再贴行） */
+.settings-card-title + .settings-card-row {
+  margin-top: var(--field-gap);
+}
+
+/* Task 12C：卡片行标题（复用字段标签视觉语言，与描述文案紧凑堆叠） */
+.settings-card-row .settings-field-label {
+  margin: 0 0 2px;
+}
+
+/* 穿透开启提示（Task 12C：非颜色单一来源——文字本身说明恢复入口） */
+.settings-card-hint-alert {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+/* ---------- 字段 ---------- */
+
+.settings-field {
+  margin-top: var(--field-gap);
+}
+
+.settings-field-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.settings-field-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings-field-value {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+
+.settings-field-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.settings-field-scale-marks {
+  display: flex;
+  justify-content: space-between;
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* ---------- 滑块（原生 input[range] + 填充轨道） ---------- */
+
+.settings-app input[type='range'] {
+  --fill: 0%;
+
+  box-sizing: border-box;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settings-app input[type='range']::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--fill),
+    var(--track) var(--fill),
+    var(--track) 100%
+  );
+}
+
+.settings-app input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid var(--accent);
+  transition: box-shadow 120ms ease;
+}
+
+.settings-app input[type='range']:hover::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.settings-app input[type='range']:focus-visible {
+  outline: none;
+}
+
+.settings-app input[type='range']:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px #ffffff, 0 0 0 6px var(--focus-ring);
+}
+
+/* ---------- 开关（原生 button role=switch） ---------- */
+
+.settings-toggle {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--track);
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.settings-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  display: block;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  transition: transform 140ms ease;
+}
+
+.settings-toggle[aria-checked='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.settings-toggle[aria-checked='true'] .settings-toggle-thumb {
+  transform: translateX(18px);
+  border-color: transparent;
+}
+
+.settings-toggle:hover {
+  border-color: var(--accent);
+}
+
+.settings-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* 视觉隐藏的开关状态文字（供屏幕阅读器/自动化观测） */
+.settings-toggle-label-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* ---------- 分段选择器（原生 radio group） ---------- */
+
+.settings-segmented {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--track);
+}
+
+.settings-segmented-option {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.settings-segmented-option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+}
+
+.settings-segmented-label {
+  display: block;
+  text-align: center;
+  padding: 6px 0;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+  user-select: none;
+}
+
+.settings-segmented-option input:checked + .settings-segmented-label {
+  background: var(--card-bg);
+  color: var(--text-primary);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.settings-segmented-option input:focus-visible + .settings-segmented-label {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.settings-segmented-option:hover input:not(:checked) + .settings-segmented-label {
+  color: var(--text-primary);
+}
+
+/* ---------- 底部操作区 ---------- */
+
+.settings-footer {
+  flex: none;
+  padding-top: 14px;
+}
+
+.settings-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 34px;
+}
+
+.settings-save-status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.settings-save-status[data-save-status='saved'] {
+  color: var(--accent);
+}
+
+.settings-save-status[data-save-status='error'] {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.settings-button-ghost {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.settings-button-ghost:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.settings-button-ghost:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.settings-button-primary {
+  padding: 6px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 140ms ease;
+}
+
+.settings-button-primary:hover {
+  filter: brightness(1.05);
+}
+
+.settings-button-primary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.settings-reset-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-bg);
+}
+
+.settings-reset-confirm-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.settings-reset-confirm-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+/* ---------- 动效尊重系统降级 ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-toggle,
+  .settings-toggle-thumb,
+  .settings-segmented-label,
+  .settings-button-ghost,
+  .settings-button-primary,
+  .settings-app input[type='range']::-webkit-slider-thumb {
+    transition: none;
+  }
+}
