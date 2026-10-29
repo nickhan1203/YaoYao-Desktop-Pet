@@ -13,13 +13,18 @@ import type { MovementBounds, Vec2 } from '../src/shared/movement-controller'
 
 const BOUNDS: MovementBounds = { x: 0, y: 0, width: 1920, height: 1080 }
 
-/** 快节奏测试配置：所有时长取确定值，转向后必恢复行走 */
+/** 快节奏测试配置：所有时长取确定值，转向后必恢复行走；restChance 0 禁用休息 */
 const FAST_CONFIG = {
   decider: {
     idleDurationSec: { minSec: 1, maxSec: 1 },
     turnDurationSec: { minSec: 0.5, maxSec: 0.5 },
     walkDurationSec: { minSec: 10, maxSec: 10 },
-    resumeWalkAfterTurnRatio: 1
+    resumeWalkAfterTurnRatio: 1,
+    restSitDurationSec: { minSec: 8, maxSec: 8 },
+    restLieDurationSec: { minSec: 15, maxSec: 15 },
+    restCooldownSec: 45,
+    restChance: 0,
+    restSitShare: 1
   }
 }
 
@@ -94,7 +99,7 @@ function makeRuntime(options?: { window?: FakeWindow; random?: RandomSource }): 
 
 describe('pet-visual-state 协议校验', () => {
   it('合法载荷通过校验（全部 kind 与 facing 组合）', () => {
-    const kinds = ['idle', 'walking', 'turning', 'paused', 'dragging'] as const
+    const kinds = ['idle', 'walking', 'turning', 'sitting', 'lying', 'paused', 'dragging'] as const
     const facings = ['left', 'right', 'up', 'down'] as const
     for (const kind of kinds) {
       for (const facing of facings) {

@@ -30,11 +30,7 @@ describe('自动行为转换', () => {
   })
 
   it('行走 → 转向 → 待机', () => {
-    const state = run([
-      { type: 'WALK_START' },
-      { type: 'TURN_START' },
-      { type: 'TURN_END' }
-    ])
+    const state = run([{ type: 'WALK_START' }, { type: 'TURN_START' }, { type: 'TURN_END' }])
     expect(state).toEqual({ kind: 'idle' })
   })
 
@@ -95,11 +91,7 @@ describe('拖动与自动行为的关系', () => {
 
 describe('暂停与继续', () => {
   it('暂停时不能继续自动行为', () => {
-    const state = run([
-      { type: 'PAUSE' },
-      { type: 'WALK_START' },
-      { type: 'TURN_START' }
-    ])
+    const state = run([{ type: 'PAUSE' }, { type: 'WALK_START' }, { type: 'TURN_START' }])
     expect(state).toEqual({ kind: 'paused', restore: { kind: 'idle' } })
     expect(isAutoActive(state)).toBe(false)
   })
@@ -237,5 +229,100 @@ describe('复杂顺序下的一致性', () => {
       { type: 'TURN_END' }
     ])
     expect(state).toEqual({ kind: 'idle' })
+  })
+})
+
+describe('Task 11G：休息状态（sitting / lying）', () => {
+  it('待机 → 坐下 / 趴卧（SIT_START / LIE_START 仅从 idle 进入）', () => {
+    expect(run([{ type: 'SIT_START' }])).toEqual({ kind: 'sitting' })
+    expect(run([{ type: 'LIE_START' }])).toEqual({ kind: 'lying' })
+  })
+
+  it('休息到期 → 待机（REST_END）', () => {
+    expect(run([{ type: 'SIT_START' }, { type: 'REST_END' }])).toEqual({ kind: 'idle' })
+    expect(run([{ type: 'LIE_START' }, { type: 'REST_END' }])).toEqual({ kind: 'idle' })
+  })
+
+  it('休息状态不可直接互切，也不可直接开始行走或转向', () => {
+    const sitting: PetState = { kind: 'sitting' }
+    expect(transition(sitting, { type: 'LIE_START' })).toEqual(sitting)
+    expect(transition(sitting, { type: 'WALK_START' })).toEqual(sitting)
+    expect(transition(sitting, { type: 'TURN_START' })).toEqual(sitting)
+    const lying: PetState = { kind: 'lying' }
+    expect(transition(lying, { type: 'SIT_START' })).toEqual(lying)
+    expect(transition(lying, { type: 'WALK_START' })).toEqual(lying)
+    // 行走/转向中也不可直接坐下或趴卧（必须先经 WALK_END 回 idle）
+    expect(run([{ type: 'WALK_START' }, { type: 'SIT_START' }])).toEqual({ kind: 'walking' })
+    expect(run([{ type: 'WALK_START' }, { type: 'LIE_START' }])).toEqual({ kind: 'walking' })
+    expect(run([{ type: 'TURN_START' }, { type: 'SIT_START' }])).toEqual({ kind: 'turning' })
+  })
+
+  it('REST_END 对非休息状态为无操作', () => {
+    expect(run([{ type: 'WALK_START' }, { type: 'REST_END' }])).toEqual({ kind: 'walking' })
+    expect(run([{ type: 'REST_END' }])).toEqual({ kind: 'idle' })
+    expect(run([{ type: 'PAUSE' }, { type: 'REST_END' }])).toEqual({
+      kind: 'paused',
+      restore: { kind: 'idle' }
+    })
+  })
+
+  it('拖动中断休息：拖动结束后回到 idle，不自动恢复休息', () => {
+    expect(run([{ type: 'SIT_START' }, { type: 'DRAG_START' }, { type: 'DRAG_END' }])).toEqual({
+      kind: 'idle'
+    })
+    expect(run([{ type: 'LIE_START' }, { type: 'DRAG_START' }, { type: 'DRAG_END' }])).toEqual({
+      kind: 'idle'
+    })
+  })
+
+  it('拖动期间（休息来源）忽略自动行为事件，不残留恢复意图', () => {
+    // 拖动中收到的 WALK_START / SIT_START 均无效；结束时仍回 idle
+    expect(
+      run([
+        { type: 'SIT_START' },
+        { type: 'DRAG_START' },
+        { type: 'WALK_START' },
+        { type: 'SIT_START' },
+        { type: 'DRAG_END' }
+      ])
+    ).toEqual({ kind: 'idle' })
+  })
+
+  it('暂停冻结休息：PAUSE → paused(restore)，RESUME 恢复原休息状态', () => {
+    const pausedFromSitting = run([{ type: 'SIT_START' }, { type: 'PAUSE' }])
+    expect(pausedFromSitting).toEqual({
+      kind: 'paused',
+      restore: { kind: 'sitting' }
+    })
+    expect(run([{ type: 'SIT_START' }, { type: 'PAUSE' }, { type: 'RESUME' }])).toEqual({
+      kind: 'sitting'
+    })
+    expect(run([{ type: 'LIE_START' }, { type: 'PAUSE' }, { type: 'RESUME' }])).toEqual({
+      kind: 'lying'
+    })
+  })
+
+  it('休息中暂停期间 REST_END 无效（暂停优先于休息结束）', () => {
+    expect(run([{ type: 'SIT_START' }, { type: 'PAUSE' }, { type: 'REST_END' }])).toEqual({
+      kind: 'paused',
+      restore: { kind: 'sitting' }
+    })
+  })
+
+  it('isAutoActive 覆盖休息状态', () => {
+    expect(isAutoActive({ kind: 'sitting' })).toBe(true)
+    expect(isAutoActive({ kind: 'lying' })).toBe(true)
+    expect(isAutoActive({ kind: 'idle' })).toBe(false)
+  })
+
+  it('休息 → 到期 → 待机 → 再休息的完整循环', () => {
+    const state = run([
+      { type: 'SIT_START' },
+      { type: 'REST_END' },
+      { type: 'LIE_START' },
+      { type: 'REST_END' },
+      { type: 'WALK_START' }
+    ])
+    expect(state).toEqual({ kind: 'walking' })
   })
 })

@@ -15,6 +15,16 @@ declare global {
        * 返回取消订阅函数（幂等）；载荷已通过结构校验。
        */
       subscribeVisualState: (callback: (state: PetVisualState) => void) => () => void
+      /**
+       * 开发预览专用（Task 11F-B）：暂停主进程自动行为（固定窄通道，无载荷）。
+       * 生产构建主进程不注册对应 handler，调用为无操作。
+       */
+      suspendAutoBehaviorForDevPreview: () => void
+      /**
+       * 开发预览专用（Task 11F-B）：恢复主进程自动行为（固定窄通道，无载荷）。
+       * 生产构建主进程不注册对应 handler，调用为无操作。
+       */
+      resumeAutoBehaviorForDevPreview: () => void
     }
   }
 }

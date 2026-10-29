@@ -23,6 +23,13 @@
  * 触达左右边界触发的转向会记录相反方向，恢复行走时覆盖随机选向；
  * 用户拖动不受限，松开后的窗口 Y 成为新的水平行走轨道。
  *
+ * Task 11G（自主休息）：idle 到期时决策器可按概率与冷却选择坐下/趴卧
+ *（sitting / lying 状态，窗口静止）；休息到期经 REST_END 回 idle，
+ * 随后的待机时长受 REST_EXIT_GUARD_SEC 下限保护，保证 renderer 的
+ * 起身动画完成后才可能恢复行走（显式退出延迟，无双向确认协议）；
+ * 拖动开始立即取消休息（拖动结束回 idle，不自动恢复休息）；
+ * 暂停冻结休息计时与冷却，恢复后按原计划继续。
+ *
  * 活动范围：由 getBounds() 注入（实现使用 Electron screen 的 workArea，
  * 宠物中心所在显示器），与 display-clamp 的"窗口可见性"语义不同，
  * 不复用其 40px 可见约束。
@@ -89,6 +96,15 @@ export interface RuntimeDeps {
 
 const DEFAULT_TICK_INTERVAL_MS = 50
 
+/**
+ * Task 11G 起身退出保护时长（秒）：
+ * REST_END（广播给 renderer 播放起身动画）之后，紧跟的待机目标时长
+ * 至少保持该值，保证行走最早在起身动画完成之后才开始。
+ * renderer 的 sit/lie 退出动画为 5 帧 × 7fps ≈ 0.72s，此处取 1.5s
+ * 留出广播延迟与渲染余量（显式退出延迟方案，无需双向确认协议）。
+ */
+export const REST_EXIT_GUARD_SEC = 1.5
+
 function defaultScheduler(callback: () => void, intervalMs: number): () => void {
   const timer = setInterval(callback, intervalMs)
   return () => clearInterval(timer)
@@ -125,8 +141,18 @@ function decisionToEvent(decision: BehaviorDecision, state: PetState): PetEvent 
       return { type: 'WALK_START' }
     case 'startTurning':
       return { type: 'TURN_START' }
+    case 'startSitting':
+      return { type: 'SIT_START' }
+    case 'startLying':
+      return { type: 'LIE_START' }
     case 'startIdle':
-      return state.kind === 'turning' ? { type: 'TURN_END' } : { type: 'WALK_END' }
+      if (state.kind === 'turning') {
+        return { type: 'TURN_END' }
+      }
+      if (state.kind === 'sitting' || state.kind === 'lying') {
+        return { type: 'REST_END' }
+      }
+      return { type: 'WALK_END' }
     default:
       return null
   }
@@ -181,6 +207,12 @@ export class PetBehaviorRuntime {
    * 其他来源的 startWalking（待机后/拖动后）不受影响。
    */
   private pendingTurnDirection: Vec2 | null = null
+  /**
+   * 休息冷却剩余秒数（Task 11G）：REST_END 时重置为配置冷却时长，
+   * 之后随 tick 递减；仅 ≤ 0 时决策器才可能选择休息。
+   * paused / dragging 期间冻结（不随真实时间流逝，确定性可测）。
+   */
+  private restCooldownRemainingSec = 0
   private cancelLoop: (() => void) | null = null
   private lastTickMs: number | null = null
   private running = false
@@ -210,6 +242,9 @@ export class PetBehaviorRuntime {
     this.running = true
     this.syncPositionFromWindow()
     this.behaviorElapsedSec = 0
+    // Task 11G：启动即进入完整冷却，首次休息至少在冷却时长之后，
+    // 避免刚启动就坐下/趴卧（同时保证旧测试的时间窗内不触发休息）。
+    this.restCooldownRemainingSec = this.deciderConfig.restCooldownSec
     // 启动后进入合理的待机阶段：采样待机目标时长
     this.targetDurationSec = this.sampleTargetFor(this.state)
     this.lastTickMs = this.clock()
@@ -316,7 +351,13 @@ export class PetBehaviorRuntime {
     }
 
     this.behaviorElapsedSec += dtSec
+    // Task 11G：休息冷却随行为时间递减（paused/dragging 冻结在上方早退）。
+    if (this.restCooldownRemainingSec > 0) {
+      this.restCooldownRemainingSec = Math.max(0, this.restCooldownRemainingSec - dtSec)
+    }
 
+    // Task 11G：仅 walking 推进窗口位置；sitting / lying 保持静止
+    //（不产生任何 setPosition，也不因姿态动画更新坐标）。
     if (this.state.kind === 'walking') {
       const result = computeMovement({
         position: this.position,
@@ -345,6 +386,7 @@ export class PetBehaviorRuntime {
       elapsedSec: this.behaviorElapsedSec,
       targetDurationSec: this.targetDurationSec,
       hitBounds: this.state.kind === 'walking' ? this.currentHit : null,
+      restCooldownRemainingSec: this.restCooldownRemainingSec,
       config: this.deciderConfig,
       random: this.random
     })
@@ -396,10 +438,21 @@ export class PetBehaviorRuntime {
         )
       }
       this.targetDurationSec = decision.durationSec
+    } else if (decision.type === 'startSitting' || decision.type === 'startLying') {
+      // Task 11G：进入休息。窗口即刻静止（非 walking 不移动），
+      // 视觉状态广播触发 renderer 播放对应进入动画。
+      this.targetDurationSec = decision.durationSec
     } else if (decision.type === 'startIdle') {
       // startIdle：边界转向序列被待机打断，待恢复方向不再有效。
       this.pendingTurnDirection = null
-      this.targetDurationSec = decision.durationSec
+      if (event.type === 'REST_END') {
+        // Task 11G：休息结束——重置冷却，并对待机时长施加起身退出保护，
+        // 保证 renderer 起身动画（约 0.72s）完成后才可能恢复行走。
+        this.restCooldownRemainingSec = this.deciderConfig.restCooldownSec
+        this.targetDurationSec = Math.max(decision.durationSec, REST_EXIT_GUARD_SEC)
+      } else {
+        this.targetDurationSec = decision.durationSec
+      }
     }
     // 行为阶段（或行走方向）发生变化后广播视觉状态。
     this.broadcastVisualState()
@@ -414,6 +467,10 @@ export class PetBehaviorRuntime {
         return sampleDurationSec(this.deciderConfig.walkDurationSec, this.random)
       case 'turning':
         return sampleDurationSec(this.deciderConfig.turnDurationSec, this.random)
+      case 'sitting':
+        return sampleDurationSec(this.deciderConfig.restSitDurationSec, this.random)
+      case 'lying':
+        return sampleDurationSec(this.deciderConfig.restLieDurationSec, this.random)
       default:
         // paused / dragging 不会被采样（调用方只在自动行为状态调用），防御性默认值。
         return 2

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, screen } from 'electron'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { createPetWindow } from './pet-window'
-import { registerPetIpcHandlers } from './ipc-handlers'
+import { registerPetIpcHandlers, registerDevPreviewAutoBehaviorHandlers } from './ipc-handlers'
 import { PetBehaviorRuntime, type RuntimeWindow } from './pet-behavior-runtime'
 import { PET_WINDOW_HEIGHT, PET_WINDOW_WIDTH } from '../shared/pet-config'
 import type { PetVisualState } from '../shared/pet-visual-state'
@@ -78,6 +78,9 @@ function getWalkBounds(): MovementBounds {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
+// This method will be called when Electron has finished initialization
+// and is ready to create browser windows.
+// Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.yaoyao.desktoppet')
@@ -102,6 +105,25 @@ app.whenReady().then(() => {
       getVisualState: (): PetVisualState | null => behaviorRuntime?.currentVisualState ?? null
     }
   )
+
+  // 开发预览自动行为控制（Task 11F-B）：仅开发构建注册（主进程强制校验，
+  // 不依赖 renderer 的 DEV 判断）。复用 stop()/start() 而非 pause()/resume()：
+  // pause 会广播 paused 视觉状态，导致 renderer 中断姿态预览；stop 只冻结
+  // 行为循环（不动窗口、不改视觉状态），start 从窗口当前位置恢复自动行为，
+  // 保持 Task 11D 的水平轨道规则（状态机与移动控制器不变）。
+  // 已知 dev-only 代价：恢复后行为时长基准重置（start 重新采样目标时长）。
+  if (!app.isPackaged) {
+    registerDevPreviewAutoBehaviorHandlers({
+      suspendAutoBehavior: (): void => {
+        behaviorRuntime?.stop()
+        console.log('[dev-preview] 自动行为已暂停（姿态预览）')
+      },
+      resumeAutoBehavior: (): void => {
+        behaviorRuntime?.start()
+        console.log('[dev-preview] 自动行为已恢复')
+      }
+    })
+  }
 
   // 窗口销毁时停止运行循环，避免访问已销毁的 BrowserWindow。
   petWindow.on('closed', () => {

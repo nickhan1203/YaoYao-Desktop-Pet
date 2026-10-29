@@ -32,6 +32,8 @@ const VALID_KINDS: ReadonlySet<PetState['kind']> = new Set([
   'idle',
   'walking',
   'turning',
+  'sitting',
+  'lying',
   'paused',
   'dragging'
 ])

@@ -16,6 +16,11 @@ release/
 # Keep original/private pet photos outside the public repository.
 private-assets/
 original-photos/
+# 素材源包（整包交付物，体积过大；正式使用的帧已复制到 src/renderer/src/assets/）
+yaoyao-animation-v2/
+yaoyao-animation-v3/
+yaoyao-animations-v2.zip
+yaoyao-animations-v3.zip
 # Local app data and OS/editor noise
 .DS_Store
 Thumbs.db

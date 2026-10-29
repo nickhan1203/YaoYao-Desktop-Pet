@@ -40,7 +40,19 @@ const yaoyaoAPI = {
     ipcRenderer.send('pet:drag-end')
   },
   subscribeVisualState: (callback: (state: PetVisualState) => void): (() => void) =>
-    createVisualStateSubscription(ipc, VISUAL_STATE_CHANNEL, GET_VISUAL_STATE_CHANNEL, callback)
+    createVisualStateSubscription(ipc, VISUAL_STATE_CHANNEL, GET_VISUAL_STATE_CHANNEL, callback),
+  /**
+   * 开发预览专用（Task 11F-B）：向固定窄通道发送无载荷信号，暂停/恢复
+   * 主进程自动行为。安全边界：主进程仅在开发构建（!app.isPackaged）注册
+   * 对应 handler——生产环境下发送到未注册通道为无操作；renderer 侧调用点
+   * 位于 import.meta.env.DEV 死分支，生产构建整段剔除。
+   */
+  suspendAutoBehaviorForDevPreview: (): void => {
+    ipcRenderer.send('pet:dev-preview-suspend-auto')
+  },
+  resumeAutoBehaviorForDevPreview: (): void => {
+    ipcRenderer.send('pet:dev-preview-resume-auto')
+  }
 }
 
 contextBridge.exposeInMainWorld('yaoyao', yaoyaoAPI)

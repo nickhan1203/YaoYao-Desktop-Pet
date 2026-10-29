@@ -6,6 +6,9 @@ const DRAG_START_CHANNEL = 'pet:drag-start'
 const DRAG_END_CHANNEL = 'pet:drag-end'
 /** 视觉状态查询通道：renderer 订阅时获取当前状态（一次性 invoke） */
 const GET_VISUAL_STATE_CHANNEL = 'pet:get-visual-state'
+/** 开发预览自动行为控制通道（Task 11F-B，无载荷，仅开发构建注册） */
+const DEV_PREVIEW_SUSPEND_CHANNEL = 'pet:dev-preview-suspend-auto'
+const DEV_PREVIEW_RESUME_CHANNEL = 'pet:dev-preview-resume-auto'
 
 /** 拖动跟随的轮询间隔（约 60fps） */
 const DRAG_POLL_INTERVAL_MS = 16
@@ -27,6 +30,31 @@ export interface DragCallbacks {
 export interface VisualStateHandlers {
   /** 返回当前视觉状态（来自行为运行时的权威快照）；未提供时不注册查询通道 */
   getVisualState?: () => PetVisualState | null
+}
+
+/** 开发预览自动行为控制回调（Task 11F-B） */
+export interface DevPreviewAutoBehaviorCallbacks {
+  /** 冻结自动行为（复用行为运行时 stop：不改视觉状态、不动窗口） */
+  suspendAutoBehavior: () => void
+  /** 恢复自动行为（复用行为运行时 start：从窗口当前位置继续） */
+  resumeAutoBehavior: () => void
+}
+
+/**
+ * 注册开发预览专用的自动行为暂停/恢复通道（Task 11F-B）。
+ *
+ * 最小权限与安全边界：
+ * - 仅两条固定窄通道，无载荷、无返回值，不暴露任何 Electron API；
+ * - 只允许在开发构建中调用（由 index.ts 以 !app.isPackaged 门控注册；
+ *   生产构建不注册 handler，任何发送都是无操作）；
+ * - 复用行为运行时已有的 stop()/start()（幂等、可重复调用），
+ *   不修改正式自动行为逻辑、不新增行为状态。
+ */
+export function registerDevPreviewAutoBehaviorHandlers(
+  callbacks: DevPreviewAutoBehaviorCallbacks
+): void {
+  ipcMain.on(DEV_PREVIEW_SUSPEND_CHANNEL, () => callbacks.suspendAutoBehavior())
+  ipcMain.on(DEV_PREVIEW_RESUME_CHANNEL, () => callbacks.resumeAutoBehavior())
 }
 
 /**

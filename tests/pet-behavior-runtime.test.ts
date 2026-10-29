@@ -1,22 +1,31 @@
 import { describe, expect, it } from 'vitest'
 import {
   PetBehaviorRuntime,
+  REST_EXIT_GUARD_SEC,
   normalizeHorizontalDirection,
+  type RuntimeConfig,
   type RuntimeWindow,
   type Scheduler
 } from '../src/main/pet-behavior-runtime'
 import type { RandomSource } from '../src/shared/pet-behavior-decider'
 import type { MovementBounds, Vec2 } from '../src/shared/movement-controller'
+import type { PetVisualState } from '../src/shared/pet-visual-state'
 
 const BOUNDS: MovementBounds = { x: 0, y: 0, width: 1920, height: 1080 }
 
-/** 快节奏测试配置：所有时长取确定值，转向后必恢复行走 */
+/** 快节奏测试配置：所有时长取确定值，转向后必恢复行走；
+ * restChance 0 禁用休息（与旧版本行为完全一致，不消耗随机数）。 */
 const FAST_CONFIG = {
   decider: {
     idleDurationSec: { minSec: 1, maxSec: 1 },
     turnDurationSec: { minSec: 0.5, maxSec: 0.5 },
     walkDurationSec: { minSec: 10, maxSec: 10 },
-    resumeWalkAfterTurnRatio: 1
+    resumeWalkAfterTurnRatio: 1,
+    restSitDurationSec: { minSec: 8, maxSec: 8 },
+    restLieDurationSec: { minSec: 15, maxSec: 15 },
+    restCooldownSec: 45,
+    restChance: 0,
+    restSitShare: 1
   }
 }
 
@@ -84,9 +93,10 @@ interface Harness {
 
 function makeRuntime(options?: {
   window?: FakeWindow
-  config?: ReturnType<() => typeof FAST_CONFIG> | typeof TURN_TO_IDLE_CONFIG
+  config?: RuntimeConfig
   random?: RandomSource
   scheduler?: Scheduler
+  onVisualStateChange?: (state: PetVisualState) => void
 }): Harness {
   const win = options?.window ?? new FakeWindow()
   let now = 0
@@ -96,7 +106,8 @@ function makeRuntime(options?: {
     clock: (): number => now,
     random: options?.random ?? scriptedRandom([0]),
     scheduler: options?.scheduler,
-    config: options?.config ?? FAST_CONFIG
+    config: options?.config ?? FAST_CONFIG,
+    onVisualStateChange: options?.onVisualStateChange
   })
   return {
     win,
@@ -411,7 +422,12 @@ describe('时间与采样稳定性', () => {
           idleDurationSec: { minSec: 1, maxSec: 1.5 },
           turnDurationSec: { minSec: 0.4, maxSec: 0.5 },
           walkDurationSec: { minSec: 10, maxSec: 10.5 },
-          resumeWalkAfterTurnRatio: 1
+          resumeWalkAfterTurnRatio: 1,
+          restSitDurationSec: { minSec: 8, maxSec: 8 },
+          restLieDurationSec: { minSec: 15, maxSec: 15 },
+          restCooldownSec: 45,
+          restChance: 0,
+          restSitShare: 1
         }
       }
     })
@@ -649,5 +665,312 @@ describe('Task 11D：水平行走', () => {
       h.tick(t)
     }
     expect(h.runtime.currentState.kind).toBe('walking')
+  })
+})
+
+describe('Task 11G：自主坐下与趴卧行为', () => {
+  /**
+   * 休息测试配置（所有时长确定值，0.1s 步进）：
+   * - idle 1s / walk 2s / sit 3s / lie 5s / 冷却按测试需要调整；
+   * - restChance 1 + restSitShare 1 → 冷却归零后的首个 idle 到期必坐下；
+   * - 时间线（0.1s 浮点累加，到期约延后 0.1s）：
+   *   idle 1s →（冷却 1s 已归零）sitting 3s → REST_END →
+   *   idle max(1s, REST_EXIT_GUARD_SEC=1.5s) → walking。
+   */
+  const REST_BASE = {
+    idleDurationSec: { minSec: 1, maxSec: 1 },
+    turnDurationSec: { minSec: 0.5, maxSec: 0.5 },
+    walkDurationSec: { minSec: 2, maxSec: 2 },
+    resumeWalkAfterTurnRatio: 1,
+    restSitDurationSec: { minSec: 3, maxSec: 3 },
+    restLieDurationSec: { minSec: 5, maxSec: 5 },
+    restCooldownSec: 1,
+    restChance: 1,
+    restSitShare: 1
+  }
+  const SIT_CONFIG = { decider: { ...REST_BASE } }
+  const LIE_CONFIG = { decider: { ...REST_BASE, restSitShare: 0 } }
+
+  /** 0.1s 步进推进到指定时刻 */
+  function advance(h: Harness, fromMs: number, toMs: number): void {
+    for (let t = fromMs; t <= toMs; t += 100) {
+      h.tick(t)
+    }
+  }
+
+  it('idle 可以进入 sitting（冷却归零后首个 idle 到期触发）', () => {
+    const h = makeRuntime({ config: SIT_CONFIG })
+    h.runtime.start()
+    advance(h, 100, 1200)
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    expect(h.runtime.currentVisualState.kind).toBe('sitting')
+  })
+
+  it('idle 可以进入 lying（分流占比 0）', () => {
+    const h = makeRuntime({ config: LIE_CONFIG })
+    h.runtime.start()
+    advance(h, 100, 1200)
+    expect(h.runtime.currentState.kind).toBe('lying')
+    expect(h.runtime.currentVisualState.kind).toBe('lying')
+  })
+
+  it('sitting 期间窗口 X/Y 不变（真实 setPosition 记录验证）', () => {
+    const h = makeRuntime({ config: SIT_CONFIG })
+    h.runtime.start()
+    advance(h, 100, 1500)
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    expect(h.win.setPositionCalls).toHaveLength(0)
+    advance(h, 1600, 4000)
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    expect(h.win.setPositionCalls).toHaveLength(0)
+  })
+
+  it('lying 期间窗口 X/Y 不变', () => {
+    const h = makeRuntime({ config: LIE_CONFIG })
+    h.runtime.start()
+    advance(h, 100, 1500)
+    expect(h.runtime.currentState.kind).toBe('lying')
+    expect(h.win.setPositionCalls).toHaveLength(0)
+    advance(h, 1600, 6000)
+    // lie 5s：约 6.2s 到期，6s 前仍应保持趴卧
+    expect(h.runtime.currentState.kind).toBe('lying')
+    expect(h.win.setPositionCalls).toHaveLength(0)
+  })
+
+  it('walking 先结束再休息：进入休息前移动已停止（位置冻结跨越 idle→sitting）', () => {
+    // 冷却 2s > 首个 idle 窗口 1s → 首个 idle 到期走行走；行走 2s 结束
+    // 后冷却已归零 → 第二个 idle 到期进入休息。
+    const config = { decider: { ...REST_BASE, restCooldownSec: 2 } }
+    const h = makeRuntime({ config })
+    h.runtime.start()
+    advance(h, 100, 3200)
+    expect(h.runtime.currentState.kind).toBe('idle') // 行走 2s 已结束
+    expect(h.win.setPositionCalls.length).toBeGreaterThan(0)
+    const callsAtWalkEnd = h.win.setPositionCalls.length
+    const frozen = h.win.getPosition()
+    // idle → sitting 全程无新 setPosition；sitting 保持期亦冻结
+    advance(h, 3300, 7000)
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    expect(h.win.setPositionCalls.length).toBe(callsAtWalkEnd)
+    expect(h.win.getPosition()).toEqual(frozen)
+  })
+
+  it('sitting 正确执行进入 → 保持 → 退出（REST_END 回 idle，广播序列正确）', () => {
+    const states: PetVisualState[] = []
+    const h = makeRuntime({ config: SIT_CONFIG, onVisualStateChange: (s) => states.push(s) })
+    h.runtime.start()
+    advance(h, 100, 4500)
+    const kinds = states.map((s) => s.kind)
+    expect(kinds).toContain('sitting')
+    expect(kinds[kinds.length - 1]).toBe('idle') // 约 4.2s REST_END
+    expect(h.runtime.currentState.kind).toBe('idle')
+  })
+
+  it('lying 正确执行进入 → 保持 → 退出（REST_END 回 idle）', () => {
+    const h = makeRuntime({ config: LIE_CONFIG })
+    h.runtime.start()
+    advance(h, 100, 1500)
+    expect(h.runtime.currentState.kind).toBe('lying')
+    advance(h, 1600, 6500)
+    expect(h.runtime.currentState.kind).toBe('idle') // 5s 休息 + 浮点余量
+  })
+
+  it('起身完成前不恢复 walking 移动（REST_EXIT_GUARD_SEC 下限保护）', () => {
+    // 退出动画实际时长：5 帧 × 7fps ≈ 0.72s < REST_EXIT_GUARD_SEC
+    expect(REST_EXIT_GUARD_SEC).toBeGreaterThanOrEqual(5 / 7)
+    // 冷却 3s：先行走（约 1.1–3.1s）→ 首次休息（约 4.2–7.2s）→
+    // REST_END 后冷却未归零，恢复行走而不是连续休息。
+    const config = { decider: { ...REST_BASE, restCooldownSec: 3 } }
+    const h = makeRuntime({ config })
+    h.runtime.start()
+    advance(h, 100, 7500)
+    expect(h.runtime.currentState.kind).toBe('idle') // REST_END 约 7.2s
+    const callsAtRestEnd = h.win.setPositionCalls.length
+    expect(callsAtRestEnd).toBeGreaterThan(0) // 休息前确有行走移动
+    // REST_END + 1.2s（退出动画 0.72s 已含）：仍在 idle 且窗口未移动
+    advance(h, 7600, 8400)
+    expect(h.runtime.currentState.kind).toBe('idle')
+    expect(h.win.setPositionCalls.length).toBe(callsAtRestEnd)
+    // 保护期（1.5s）过后恢复行走，窗口重新移动
+    advance(h, 8500, 9600)
+    expect(h.runtime.currentState.kind).toBe('walking')
+    expect(h.win.setPositionCalls.length).toBeGreaterThan(callsAtRestEnd)
+  })
+
+  it('sitting 不直接跳变 lying：到期回 idle，绝不直接互切', () => {
+    const h = makeRuntime({ config: SIT_CONFIG })
+    h.runtime.start()
+    advance(h, 100, 1200)
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    // sitting 全程保持 sitting，绝不直接进入 lying
+    advance(h, 1300, 4000)
+    expect(h.runtime.currentState.kind).not.toBe('lying')
+  })
+
+  it('lying 不直接跳变 sitting', () => {
+    const h = makeRuntime({ config: LIE_CONFIG })
+    h.runtime.start()
+    advance(h, 100, 1200)
+    expect(h.runtime.currentState.kind).toBe('lying')
+    advance(h, 1300, 6000)
+    // lying 到期回 idle；期间任何时刻不直接进入 sitting
+    expect(['lying', 'idle']).toContain(h.runtime.currentState.kind)
+  })
+
+  it('休息冷却时间生效：REST_END 后的 idle 到期不立即再休息', () => {
+    // 冷却 6s：初始冷却使首次休息延后到约 7.3s；REST_END（约 10.3s）后
+    // 冷却重置，首个 idle 到期（约 11.8s）走行走而不是再休息；
+    // 第二次休息要等到冷却再次归零（约 18s）。
+    const config = { decider: { ...REST_BASE, restCooldownSec: 6 } }
+    const h = makeRuntime({ config })
+    h.runtime.start()
+    advance(h, 100, 7500)
+    expect(h.runtime.currentState.kind).toBe('sitting') // 首次休息约 7.3s
+    advance(h, 7600, 12500)
+    expect(h.runtime.currentState.kind).toBe('walking') // REST_END 后恢复行走
+    // 冷却期内（REST_END 后 6s 内）不再休息
+    advance(h, 12600, 17000)
+    expect(h.runtime.currentState.kind).not.toBe('sitting')
+    expect(h.runtime.currentState.kind).not.toBe('lying')
+    // 冷却归零后（约 18s）允许第二次休息
+    advance(h, 17100, 19500)
+    expect(h.runtime.currentState.kind).toBe('sitting')
+  })
+
+  it('随机触发可确定性复现（相同时钟与随机序列产生相同状态轨迹与坐标）', () => {
+    const runOnce = (): { states: string[]; positions: Array<{ x: number; y: number }> } => {
+      const win = new FakeWindow(100, 100)
+      const states: string[] = []
+      const h = makeRuntime({ window: win, config: SIT_CONFIG, random: scriptedRandom([0]) })
+      h.runtime.start()
+      for (let t = 100; t <= 9000; t += 100) {
+        h.tick(t)
+        states.push(h.runtime.currentState.kind)
+      }
+      return { states, positions: [...win.setPositionCalls] }
+    }
+    const first = runOnce()
+    const second = runOnce()
+    expect(second.states).toEqual(first.states)
+    expect(second.positions).toEqual(first.positions)
+    // 轨迹确实包含完整休息循环
+    expect(first.states).toContain('sitting')
+    expect(first.states).toContain('idle')
+  })
+
+  it('dragging 中断 sitting：立即停止休息，结束后回 idle 不自动恢复', () => {
+    const h = makeRuntime({ config: SIT_CONFIG })
+    h.runtime.start()
+    advance(h, 100, 1500)
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    h.runtime.handleDragStart()
+    expect(h.runtime.currentState.kind).toBe('dragging')
+    advance(h, 1600, 3000)
+    expect(h.runtime.currentState.kind).toBe('dragging') // 不被旧休息计时拉回
+    h.win.teleport(600, 400)
+    h.runtime.handleDragEnd()
+    expect(h.runtime.currentState.kind).toBe('idle') // 不恢复 sitting
+    const calls = h.win.setPositionCalls.length
+    advance(h, 3100, 3300)
+    expect(h.win.setPositionCalls.length).toBe(calls) // 新轨道下短暂 idle 无移动
+  })
+
+  it('dragging 中断 lying：结束后回 idle 不自动恢复', () => {
+    const h = makeRuntime({ config: LIE_CONFIG })
+    h.runtime.start()
+    advance(h, 100, 1500)
+    expect(h.runtime.currentState.kind).toBe('lying')
+    h.runtime.handleDragStart()
+    h.win.teleport(300, 300)
+    h.runtime.handleDragEnd()
+    expect(h.runtime.currentState.kind).toBe('idle')
+    advance(h, 1600, 2500)
+    expect(['idle', 'walking']).toContain(h.runtime.currentState.kind)
+    expect(h.runtime.currentState.kind).not.toBe('lying')
+  })
+
+  it('休息到期瞬间的拖动不被旧决策污染（DRAG_START 先于到期 tick）', () => {
+    // sitting 目标 3s，累计约 2.4s（差 0.6s 到期）时开始拖动：
+    // 后续 tick 在 dragging 下不产生 REST_END，结束后从 idle 重新开始。
+    const h = makeRuntime({ config: SIT_CONFIG })
+    h.runtime.start()
+    advance(h, 100, 1500)
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    advance(h, 1600, 3900)
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    h.runtime.handleDragStart()
+    advance(h, 4000, 5000) // 跨过原到期时刻
+    expect(h.runtime.currentState.kind).toBe('dragging')
+    h.runtime.handleDragEnd()
+    expect(h.runtime.currentState.kind).toBe('idle')
+  })
+
+  it('paused 不错误推进休息计时（暂停期间时长冻结，恢复后按原计划到期）', () => {
+    const h = makeRuntime({ config: SIT_CONFIG })
+    h.runtime.start()
+    advance(h, 100, 1500)
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    h.runtime.pause()
+    expect(h.runtime.currentState.kind).toBe('paused')
+    advance(h, 1600, 12000) // 暂停 10s+
+    expect(h.runtime.currentState.kind).toBe('paused')
+    h.runtime.resume()
+    expect(h.runtime.currentState.kind).toBe('sitting') // 恢复原休息状态
+    // 休息从暂停前进度继续（约 0.4s 已累计）：3s 到期约需再 2.7s
+    advance(h, 12100, 15500)
+    expect(h.runtime.currentState.kind).toBe('idle')
+  })
+
+  it('paused 同时冻结休息冷却（恢复后冷却不随暂停时间流逝）', () => {
+    // 冷却 6s：首次休息约 7.3s 起；休息中暂停 30s 后恢复，
+    // REST_END 后的保护期 idle 到期时冷却未归零 → 恢复行走而非再休息。
+    const config = { decider: { ...REST_BASE, restCooldownSec: 6 } }
+    const h = makeRuntime({ config })
+    h.runtime.start()
+    advance(h, 100, 7500)
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    h.runtime.pause()
+    advance(h, 7600, 40000)
+    expect(h.runtime.currentState.kind).toBe('paused')
+    h.runtime.resume()
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    advance(h, 40100, 43500)
+    expect(h.runtime.currentState.kind).toBe('idle') // REST_END（暂停冻结后按原计划到期）
+    advance(h, 43600, 44500)
+    expect(['idle', 'walking']).toContain(h.runtime.currentState.kind) // 保护期内
+    advance(h, 44600, 45600)
+    expect(h.runtime.currentState.kind).toBe('walking') // 保护期过后恢复行走（约 44.3s）
+    advance(h, 45700, 50000)
+    expect(h.runtime.currentState.kind).not.toBe('sitting') // 冷却未随暂停流逝
+  })
+
+  it('renderer 重建后状态可查询：sitting 期间 currentVisualState 保持权威快照', () => {
+    const h = makeRuntime({ config: SIT_CONFIG })
+    h.runtime.start()
+    advance(h, 100, 2000)
+    expect(h.runtime.currentVisualState).toEqual({ kind: 'sitting', facing: 'right' })
+    // 朝向沿用最近行走方向（镜像由 renderer 容器机制处理）
+    advance(h, 2100, 4500)
+    expect(h.runtime.currentVisualState.kind).toBe('idle')
+  })
+
+  it('Task 11D 水平行走不回归：休息周期前后的行走仍仅水平移动', () => {
+    // 冷却 3s：行走（1.1–3.1s）→ 休息（4.2–7.2s）→ 起身保护 →
+    // 恢复行走（约 8.7s 起），全程 Y 恒为初始轨道。
+    const win = new FakeWindow(100, 333)
+    const config = { decider: { ...REST_BASE, restCooldownSec: 3 } }
+    const h = makeRuntime({ window: win, config })
+    h.runtime.start()
+    advance(h, 100, 5000)
+    expect(h.runtime.currentState.kind).toBe('sitting')
+    advance(h, 5100, 8000)
+    expect(h.runtime.currentState.kind).toBe('idle') // REST_END 后
+    advance(h, 8100, 9600)
+    expect(h.runtime.currentState.kind).toBe('walking') // 保护期后恢复行走
+    for (const call of win.setPositionCalls) {
+      expect(call.y).toBe(333)
+    }
+    const last = win.setPositionCalls[win.setPositionCalls.length - 1]
+    expect(last.x).toBeGreaterThan(100)
   })
 })

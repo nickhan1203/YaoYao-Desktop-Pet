@@ -61,6 +61,18 @@ describe('resolveDisplayCommand 状态映射（场景 1）', () => {
     }
   )
 
+  it.each(['sitting', 'lying'] as const)(
+    'Task 11G：%s → 静态 idle 基底（姿态精灵由 posture 层叠加显示）',
+    (kind) => {
+      const command = resolveDisplayCommand(state(kind, 'right'))
+      expect(command.showWalk).toBe(false)
+      expect(command.walkPlaying).toBe(false)
+      // 缩放与定位与 walk/idle 完全一致（11E-v2 验收参数不回归）
+      expect(command.scaleY).toBe(CHARACTER_SCALE)
+      expect(command.positionY).toBeCloseTo(227.5 - CHARACTER_SCALE * 464, 10)
+    }
+  )
+
   it('null 状态（订阅建立前/素材加载完成前）→ 默认 idle 朝右', () => {
     const command = resolveDisplayCommand(null)
     expect(command.showWalk).toBe(false)

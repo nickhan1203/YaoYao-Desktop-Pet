@@ -6,13 +6,23 @@
  * - idle：待机，无自动行为进行中。
  * - walking：行走中（自动行为）。
  * - turning：转向中（自动行为）。
+ * - sitting：坐着休息中（自动行为，Task 11G）。
+ * - lying：趴卧休息中（自动行为，Task 11G）。
  * - paused：已暂停，restore 记录暂停前的自动行为状态；RESUME 时恢复。
  * - dragging：用户拖动中，restore 记录拖动前的状态（自动行为或 paused），
  *   拖动结束后恢复到 restore，避免无条件回到 walking。
  *
- * 优先级：dragging > paused > 自动行为（walking / turning）。
+ * 优先级：dragging > paused > 自动行为（walking / turning / sitting / lying）。
  *
- * 与 Task 3A 拖动接口的衔接约定（本任务不接入，仅预留）：
+ * Task 11G 休息行为约束：
+ * - sitting / lying 只能从 idle 进入（SIT_START / LIE_START），
+ *   到期经 REST_END 回到 idle——不允许休息状态之间直接互切，
+ *   也不允许从休息直接开始行走（必须先 REST_END 回 idle）；
+ * - 拖动结束会取消休息（回到 idle 而不是自动恢复 sitting / lying）；
+ * - 行为状态（sitting）与动画阶段（entering/holding/exiting）是两个概念：
+ *   动画阶段由 renderer 姿态播放器管理，主进程只管理行为级状态与时长。
+ *
+ * 与 Task 3A 拖动接口的衔接约定：
  * - use-pet-drag 跨过拖动阈值 → 发送 DRAG_START；
  * - 松手 / pointercancel / blur → 发送 DRAG_END；
  * - 拖动期间状态机处于 dragging，自动行为（WALK_START/TURN_START）被忽略。
@@ -30,6 +40,14 @@ export interface TurningState {
   kind: 'turning'
 }
 
+export interface SittingState {
+  kind: 'sitting'
+}
+
+export interface LyingState {
+  kind: 'lying'
+}
+
 export interface PausedState {
   kind: 'paused'
   /** 暂停前的自动行为状态，RESUME 时恢复 */
@@ -43,9 +61,10 @@ export interface DraggingState {
 }
 
 /** 自动行为状态（可被 paused / dragging 中断的状态） */
-export type AutoState = IdleState | WalkingState | TurningState
+export type AutoState = IdleState | WalkingState | TurningState | SittingState | LyingState
 
-export type PetState = IdleState | WalkingState | TurningState | PausedState | DraggingState
+export type PetState =
+  IdleState | WalkingState | TurningState | SittingState | LyingState | PausedState | DraggingState
 
 export type PetEvent =
   /** 自动行为启动：开始行走（对应"自动行为启动或恢复"中的启动部分） */
@@ -56,6 +75,12 @@ export type PetEvent =
   | { type: 'TURN_START' }
   /** 转向结束 → 待机 */
   | { type: 'TURN_END' }
+  /** 开始坐下休息（仅待机时可进入，Task 11G） */
+  | { type: 'SIT_START' }
+  /** 开始趴卧休息（仅待机时可进入，Task 11G） */
+  | { type: 'LIE_START' }
+  /** 休息结束（sitting / lying）→ 待机（Task 11G） */
+  | { type: 'REST_END' }
   /** 用户开始拖动（对应 preload dragStart） */
   | { type: 'DRAG_START' }
   /** 用户结束拖动（对应 preload dragEnd） */
@@ -105,6 +130,32 @@ export function transition(state: PetState, event: PetEvent): PetState {
       return state
     }
 
+    case 'SIT_START': {
+      // 仅待机时可坐下；walking / turning / 休息中 / paused / dragging 均忽略
+      // （不允许休息状态之间直接互切，也不允许从行走直接坐下）。
+      if (state.kind === 'idle') {
+        return { kind: 'sitting' }
+      }
+      return state
+    }
+
+    case 'LIE_START': {
+      // 仅待机时可趴卧；约束同 SIT_START。
+      if (state.kind === 'idle') {
+        return { kind: 'lying' }
+      }
+      return state
+    }
+
+    case 'REST_END': {
+      // 休息结束回到待机；随后的行走决策由决策器在待机到期后产生
+      // （集成层保证起身动画完成后才开始行走，见 runtime 的退出保护）。
+      if (state.kind === 'sitting' || state.kind === 'lying') {
+        return { kind: 'idle' }
+      }
+      return state
+    }
+
     case 'DRAG_START': {
       // 拖动优先级最高：从任何非 dragging 状态进入 dragging，
       // 记录拖动前的状态（含 paused）用于恢复。
@@ -117,7 +168,12 @@ export function transition(state: PetState, event: PetEvent): PetState {
     case 'DRAG_END': {
       // 仅 dragging 状态下有效；恢复到拖动前状态
       // （拖动前已暂停则回到 paused，不会无条件进入 walking）。
+      // Task 11G 例外：拖动取消休息——拖动前处于 sitting / lying 时，
+      // 结束后回到 idle 而不是自动恢复休息（休息不跨拖动续期）。
       if (state.kind === 'dragging') {
+        if (state.restore.kind === 'sitting' || state.restore.kind === 'lying') {
+          return { kind: 'idle' }
+        }
         return state.restore
       }
       return state
@@ -127,7 +183,9 @@ export function transition(state: PetState, event: PetEvent): PetState {
       switch (state.kind) {
         case 'idle':
         case 'walking':
-        case 'turning': {
+        case 'turning':
+        case 'sitting':
+        case 'lying': {
           return { kind: 'paused', restore: state }
         }
         case 'dragging': {
@@ -164,9 +222,14 @@ export function transition(state: PetState, event: PetEvent): PetState {
   }
 }
 
-/** 判断当前是否处于自动行为进行中（walking / turning）。 */
+/** 判断当前是否处于自动行为进行中（walking / turning / sitting / lying）。 */
 export function isAutoActive(state: PetState): boolean {
-  return state.kind === 'walking' || state.kind === 'turning'
+  return (
+    state.kind === 'walking' ||
+    state.kind === 'turning' ||
+    state.kind === 'sitting' ||
+    state.kind === 'lying'
+  )
 }
 
 /** 判断当前是否处于拖动中。 */
