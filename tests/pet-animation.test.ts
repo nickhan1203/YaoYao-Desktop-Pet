@@ -118,10 +118,26 @@ describe('播放速度换算（场景 4 / 11）', () => {
     expect(toAnimationSpeed(WALK_FPS, TICKER_FPS)).toBeCloseTo(8 / 60, 12)
   })
 
-  it('常量约定：8 帧、8 FPS、60 ticker FPS、0.5 缩放', () => {
+  it('常量约定：8 帧、8 FPS、60 ticker FPS、0.625 缩放（v2 512 画布）', () => {
     expect(WALK_FPS).toBe(8)
     expect(TICKER_FPS).toBe(60)
-    expect(CHARACTER_SCALE).toBe(0.5)
+    expect(CHARACTER_SCALE).toBe(0.625)
+  })
+
+  it('Task 11E-v2：脚底锚点与目标点符合 v2 素材规格', () => {
+    // FOOT_REFERENCE = manifest anchor normalized [0.5, 0.90625] → (256, 464)
+    expect(FOOT_REFERENCE).toEqual({ x: 256, y: 464 })
+    // x 取窗口水平中心（v2 角色相对锚点对称），y 沿用 v1 已验收脚底高度
+    expect(FOOT_TARGET).toEqual({ x: 120, y: 227.5 })
+    // 显示命令落点：非镜像 (-40, -62.5)；镜像 (280, -62.5)
+    const right = resolveDisplayCommand(state('walking', 'right'))
+    expect(right.positionX).toBeCloseTo(120 - 0.625 * 256, 10)
+    expect(right.positionY).toBeCloseTo(227.5 - 0.625 * 464, 10)
+    const left = resolveDisplayCommand(state('walking', 'left'))
+    expect(left.positionX).toBeCloseTo(120 + 0.625 * 256, 10)
+    // v2 角色相对锚点横向对称（11F 像素实测最大半宽约 190px）：
+    // 0.625 × 190 = 118.75 ≤ FOOT_TARGET.x = 120 → 镜像前后角色均不出画布
+    expect(CHARACTER_SCALE * 190).toBeLessThanOrEqual(FOOT_TARGET.x)
   })
 
   it.each([
@@ -213,7 +229,7 @@ describe('resolveAssetLoadOutcome 素材降级（场景 8 / 9 / 10）', () => {
     const outcome = resolveAssetLoadOutcome(fulfilled(idleImage), walkResults)
     expect(outcome.walk).toBeNull()
     expect(outcome.idle).toBe(idleImage)
-    expect(outcome.failures).toEqual(['walk/walk-06.png'])
+    expect(outcome.failures).toEqual(['v2/walk/walk-06.png'])
   })
 
   it('多帧失败 → failures 逐一记录正确序号', () => {
@@ -222,14 +238,14 @@ describe('resolveAssetLoadOutcome 素材降级（场景 8 / 9 / 10）', () => {
     )
     const outcome = resolveAssetLoadOutcome(fulfilled(idleImage), walkResults)
     expect(outcome.walk).toBeNull()
-    expect(outcome.failures).toEqual(['walk/walk-01.png', 'walk/walk-07.png'])
+    expect(outcome.failures).toEqual(['v2/walk/walk-01.png', 'v2/walk/walk-07.png'])
   })
 
   it('idle 失败 → idle 为 null（占位降级链），walk 不受影响', () => {
     const outcome = resolveAssetLoadOutcome(rejected<HTMLImageElement>(), walkImages.map(fulfilled))
     expect(outcome.idle).toBeNull()
     expect(outcome.walk).toEqual(walkImages)
-    expect(outcome.failures).toEqual(['idle/idle-01.png'])
+    expect(outcome.failures).toEqual(['v2/walk/walk-01.png（idle 静止帧）'])
   })
 
   it('全部失败 → 双 null + 完整失败清单（完全降级）', () => {
@@ -240,27 +256,31 @@ describe('resolveAssetLoadOutcome 素材降级（场景 8 / 9 / 10）', () => {
     expect(outcome.idle).toBeNull()
     expect(outcome.walk).toBeNull()
     expect(outcome.failures).toEqual([
-      'idle/idle-01.png',
-      'walk/walk-01.png',
-      'walk/walk-02.png',
-      'walk/walk-03.png',
-      'walk/walk-04.png',
-      'walk/walk-05.png',
-      'walk/walk-06.png',
-      'walk/walk-07.png',
-      'walk/walk-08.png'
+      'v2/walk/walk-01.png（idle 静止帧）',
+      'v2/walk/walk-01.png',
+      'v2/walk/walk-02.png',
+      'v2/walk/walk-03.png',
+      'v2/walk/walk-04.png',
+      'v2/walk/walk-05.png',
+      'v2/walk/walk-06.png',
+      'v2/walk/walk-07.png',
+      'v2/walk/walk-08.png'
     ])
   })
 })
 
-describe('帧序列完整性（场景 12）', () => {
+describe('帧序列完整性（场景 1 / 12，Task 11E-v2）', () => {
   it('WALK_FRAME_URLS 恰为 8 帧', () => {
     expect(WALK_FRAME_URLS).toHaveLength(8)
   })
 
-  it('walk 帧与 idle 帧为不同的资源 URL（不混用素材）', () => {
-    for (const url of WALK_FRAME_URLS) {
-      expect(url).not.toBe(IDLE_FRAME_URL)
-    }
+  it('帧序与 v2 素材包 manifest 一致（walk-01..08 顺序）', () => {
+    WALK_FRAME_URLS.forEach((url, index) => {
+      expect(url).toContain(`/v2/walk/walk-0${index + 1}.png`)
+    })
+  })
+
+  it('idle 静止帧 = v2 walk-01（同 URL 复用，渲染层按 URL 去重共享纹理）', () => {
+    expect(IDLE_FRAME_URL).toBe(WALK_FRAME_URLS[0])
   })
 })

@@ -40,6 +40,24 @@ function loadImageElement(url: string): Promise<HTMLImageElement> {
 }
 
 /**
+ * 按 URL 记忆化的加载器（Task 11E-v2）：
+ * v2 的 idle 静止帧与 walk 首帧共用同一 URL，同一 URL 只加载一次、
+ * 只创建一个 Image 元素（Texture.from 以 image 元素为缓存键，
+ * 元素唯一即纹理唯一，避免重复解码与重复纹理）。
+ */
+function createMemoizedImageLoader(): (url: string) => Promise<HTMLImageElement> {
+  const cache = new Map<string, Promise<HTMLImageElement>>()
+  return (url: string): Promise<HTMLImageElement> => {
+    let pending = cache.get(url)
+    if (!pending) {
+      pending = loadImageElement(url)
+      cache.set(url, pending)
+    }
+    return pending
+  }
+}
+
+/**
  * 幺幺桌宠画布容器（行为渲染层）。
  *
  * 职责（本任务新增行走动画接入）：
@@ -112,10 +130,12 @@ function PetCanvas(): React.JSX.Element {
           app.stage.addChild(placeholder)
         }
 
-        // idle + 8 帧 walk 并行加载，任一失败不拖垮其余资源（allSettled）。
+        // idle + 8 帧 walk 并行加载（按 URL 去重：v2 idle 与 walk-01 同 URL
+        // 只加载一次），任一失败不拖垮其余资源（allSettled）。
+        const loadImage = createMemoizedImageLoader()
         return Promise.allSettled([
-          loadImageElement(IDLE_FRAME_URL),
-          ...WALK_FRAME_URLS.map(loadImageElement)
+          loadImage(IDLE_FRAME_URL),
+          ...WALK_FRAME_URLS.map(loadImage)
         ]).then((results) => {
           if (cancelled) {
             return

@@ -13,17 +13,22 @@
  */
 
 import type { PetVisualState } from '../../../shared/pet-visual-state'
-import idleAssetUrl from '../assets/pet/idle/idle-01.png'
-import walk01 from '../assets/pet/walk/walk-01.png'
-import walk02 from '../assets/pet/walk/walk-02.png'
-import walk03 from '../assets/pet/walk/walk-03.png'
-import walk04 from '../assets/pet/walk/walk-04.png'
-import walk05 from '../assets/pet/walk/walk-05.png'
-import walk06 from '../assets/pet/walk/walk-06.png'
-import walk07 from '../assets/pet/walk/walk-07.png'
-import walk08 from '../assets/pet/walk/walk-08.png'
+import walk01 from '../assets/pet/v2/walk/walk-01.png'
+import walk02 from '../assets/pet/v2/walk/walk-02.png'
+import walk03 from '../assets/pet/v2/walk/walk-03.png'
+import walk04 from '../assets/pet/v2/walk/walk-04.png'
+import walk05 from '../assets/pet/v2/walk/walk-05.png'
+import walk06 from '../assets/pet/v2/walk/walk-06.png'
+import walk07 from '../assets/pet/v2/walk/walk-07.png'
+import walk08 from '../assets/pet/v2/walk/walk-08.png'
 
-/** 行走序列帧 URL（按播放顺序显式声明，静态导入保证打包完整性） */
+/**
+ * v2 行走序列帧 URL（Task 11E-v2）。
+ * 帧序与素材包 manifest.json 的 side-right/walk 序列一致（walk-01..08）；
+ * 仅接入 side-right 8 帧，朝左由渲染层容器镜像生成
+ * （素材包 side-left 即 side-right 的逐像素镜像，无需重复引入）。
+ * v1 旧素材保留在 ../idle 与 ../walk 目录但不再被引用。
+ */
 export const WALK_FRAME_URLS: readonly string[] = [
   walk01,
   walk02,
@@ -35,29 +40,41 @@ export const WALK_FRAME_URLS: readonly string[] = [
   walk08
 ]
 
-/** idle 静态帧 URL */
-export const IDLE_FRAME_URL: string = idleAssetUrl
+/**
+ * 静止（idle/turning/paused/dragging）显示帧。
+ * v2 素材包不含独立站立帧，walk-01 为近似站姿（仅前爪略前伸），
+ * 与行走动画同风格同锚点，故兼作静止帧（与 walk 首帧共用同一 URL，
+ * 渲染层经 URL 去重加载，纹理只创建一份）。
+ */
+export const IDLE_FRAME_URL: string = walk01
 
-/** 行走动画目标帧率（帧/秒） */
+/** 行走动画目标帧率（帧/秒）：与素材包 manifest.json 的 walk fps=8 一致 */
 export const WALK_FPS = 8
 
 /** PixiJS Ticker 默认帧率（60fps 语义，用于换算 animationSpeed） */
 export const TICKER_FPS = 60
 
-/** 角色统一等比缩放（480 原始画布 → 240 显示画布） */
-export const CHARACTER_SCALE = 0.5
+/**
+ * 角色统一等比缩放（v2 512×512 画布 → 240×240 显示画布）。
+ * 取 0.625（5/8）：v2 角色可见高度约 326px → 显示约 204px，
+ * 与 v1 素材在 0.5 缩放下的视觉尺寸（约 206px）基本一致；
+ * 横向最大跨度 ±190px×0.625=237.5px ≤ 240 画布（两侧各余 1.25px）。
+ */
+export const CHARACTER_SCALE = 0.625
 
 /**
- * 脚底参考点（素材原始 480×480 画布坐标）。
- * 镜像翻转轴穿过该点：镜像前后该点在画布上的落点保持稳定。
+ * 脚底参考点（v2 素材 512×512 画布坐标）。
+ * 与素材包 manifest.json 的 anchor normalized [0.5, 0.90625] = (256, 464)
+ * 一致：x 恰为画布中心（镜像天然对称），y 位于脚底（实测 feet maxY≈460）。
  */
-export const FOOT_REFERENCE = { x: 247.5, y: 455 } as const
+export const FOOT_REFERENCE = { x: 256, y: 464 } as const
 
 /**
  * 脚底目标点（240×240 显示画布坐标）。
- * 与 Task 9B 已验收的静态角色视觉位置一致（等比缩放后的参考点位置）。
+ * x=120：v2 角色相对锚点水平对称，水平居中即脚底居中；
+ * y=227.5：沿用 v1 已验收的脚底高度，窗口内垂直布局不变。
  */
-export const FOOT_TARGET = { x: 123.75, y: 227.5 } as const
+export const FOOT_TARGET = { x: 120, y: 227.5 } as const
 
 /**
  * 将目标帧率换算为 PixiJS AnimatedSprite.animationSpeed
@@ -176,7 +193,7 @@ export function resolveAssetLoadOutcome<T>(
   const failures: string[] = []
   const idle = idleResult.status === 'fulfilled' ? idleResult.value : null
   if (idle === null) {
-    failures.push('idle/idle-01.png')
+    failures.push('v2/walk/walk-01.png（idle 静止帧）')
   }
   const walk: T[] = []
   let walkComplete = true
@@ -185,7 +202,7 @@ export function resolveAssetLoadOutcome<T>(
       walk.push(result.value)
     } else {
       walkComplete = false
-      failures.push(`walk/walk-0${index + 1}.png`)
+      failures.push(`v2/walk/walk-0${index + 1}.png`)
     }
   })
   return {
