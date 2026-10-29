@@ -31,6 +31,8 @@ import {
   toAnimationSpeed,
   WALK_FRAME_URLS,
   WALK_FPS,
+  RUN_FRAME_URLS,
+  RUN_FPS,
   TICKER_FPS
 } from '../src/renderer/src/pet/pet-animation'
 import type { PetVisualState } from '../src/shared/pet-visual-state'
@@ -294,5 +296,132 @@ describe('帧序列完整性（场景 1 / 12，Task 11E-v2）', () => {
 
   it('idle 静止帧 = v2 walk-01（同 URL 复用，渲染层按 URL 去重共享纹理）', () => {
     expect(IDLE_FRAME_URL).toBe(WALK_FRAME_URLS[0])
+  })
+})
+
+describe('Task 11H：跑步动画（状态映射 / 帧率 / 素材降级）', () => {
+  it('running → 播放跑步动画（showRun / runPlaying 为 true，showWalk 为 false）', () => {
+    const command = resolveDisplayCommand(state('running', 'right'))
+    expect(command.showRun).toBe(true)
+    expect(command.runPlaying).toBe(true)
+    expect(command.showWalk).toBe(false)
+    expect(command.walkPlaying).toBe(false)
+  })
+
+  it('walking → 不播放跑步动画（行走与跑步互斥）', () => {
+    const command = resolveDisplayCommand(state('walking', 'right'))
+    expect(command.showRun).toBe(false)
+    expect(command.runPlaying).toBe(false)
+  })
+
+  it.each(['idle', 'turning', 'sitting', 'lying', 'paused', 'dragging'] as const)(
+    'Task 11H：%s → 不播放跑步动画（静态/姿态基底）',
+    (kind) => {
+      const command = resolveDisplayCommand(state(kind, 'right'))
+      expect(command.showRun).toBe(false)
+      expect(command.runPlaying).toBe(false)
+    }
+  )
+
+  it('running 的缩放与定位与 walking 完全一致（同一容器，不因状态改变形象参数）', () => {
+    const walking = resolveDisplayCommand(state('walking', 'right'))
+    const running = resolveDisplayCommand(state('running', 'right'))
+    expect(running.scaleX).toBe(walking.scaleX)
+    expect(running.scaleY).toBe(walking.scaleY)
+    expect(running.positionX).toBe(walking.positionX)
+    expect(running.positionY).toBe(walking.positionY)
+    expectFootAnchorStable(running)
+  })
+
+  it('running 朝左同样水平镜像（与 walk 共用容器镜像逻辑）', () => {
+    const command = resolveDisplayCommand(state('running', 'left'))
+    expect(command.mirrored).toBe(true)
+    expect(command.scaleX).toBe(-CHARACTER_SCALE)
+    expectFootAnchorStable(command)
+  })
+
+  it('RUN_FRAME_URLS 恰为 8 帧，帧序与 v3 素材包 manifest 一致（run-01..08）', () => {
+    expect(RUN_FRAME_URLS).toHaveLength(8)
+    RUN_FRAME_URLS.forEach((url, index) => {
+      expect(url).toContain(`/v2/run/run-0${index + 1}.png`)
+    })
+  })
+
+  it('RUN_FPS = 12（manifest run fps，高于 walk 的 8），animationSpeed = 12/60', () => {
+    expect(RUN_FPS).toBe(12)
+    expect(RUN_FPS).toBeGreaterThan(WALK_FPS)
+    expect(toAnimationSpeed(RUN_FPS, TICKER_FPS)).toBeCloseTo(12 / 60, 12)
+  })
+
+  it('isSameCommand 识别 showRun 差异（walking 与 running 是不同命令）', () => {
+    const walking = resolveDisplayCommand(state('walking', 'right'))
+    const running = resolveDisplayCommand(state('running', 'right'))
+    expect(isSameCommand(walking, running)).toBe(false)
+    const tweaked: DisplayCommand = { ...running, showRun: false }
+    expect(isSameCommand(running, tweaked)).toBe(false)
+  })
+
+  it('PetDisplayController 幂等：running 重复广播只应用一次', () => {
+    const applyCommand = vi.fn()
+    const controller = new PetDisplayController(applyCommand)
+    controller.apply(state('running', 'right'))
+    controller.apply(state('running', 'right'))
+    expect(applyCommand).toHaveBeenCalledTimes(1)
+  })
+
+  it('run 全部帧成功 → run 组完整返回，与 walk 互不影响', () => {
+    const fulfilled = <T>(value: T): PromiseSettledResult<T> => ({ status: 'fulfilled', value })
+    const walkImages = Array.from(
+      { length: 8 },
+      (_, i) => `walk-${i + 1}` as unknown as HTMLImageElement
+    )
+    const runImages = Array.from(
+      { length: 8 },
+      (_, i) => `run-${i + 1}` as unknown as HTMLImageElement
+    )
+    const outcome = resolveAssetLoadOutcome(
+      fulfilled(walkImages[0]),
+      walkImages.map(fulfilled),
+      runImages.map(fulfilled)
+    )
+    expect(outcome.run).toEqual(runImages)
+    expect(outcome.walk).toEqual(walkImages)
+    expect(outcome.failures).toEqual([])
+  })
+
+  it('run 任一帧失败 → run 整组为 null（渲染层回退 walk 视觉），walk 不受影响', () => {
+    const fulfilled = <T>(value: T): PromiseSettledResult<T> => ({ status: 'fulfilled', value })
+    const rejected = <T>(): PromiseSettledResult<T> => ({
+      status: 'rejected',
+      reason: 'load error'
+    })
+    const walkImages = Array.from(
+      { length: 8 },
+      (_, i) => `walk-${i + 1}` as unknown as HTMLImageElement
+    )
+    const runResults = Array.from({ length: 8 }, (_, i) =>
+      i === 3
+        ? rejected<HTMLImageElement>()
+        : fulfilled(`run-${i + 1}` as unknown as HTMLImageElement)
+    )
+    const outcome = resolveAssetLoadOutcome(
+      fulfilled(walkImages[0]),
+      walkImages.map(fulfilled),
+      runResults
+    )
+    expect(outcome.run).toBeNull()
+    expect(outcome.walk).toEqual(walkImages)
+    expect(outcome.failures).toEqual(['v2/run/run-04.png'])
+  })
+
+  it('省略 runResults（旧调用方）→ run 为 null（不产生失败记录）', () => {
+    const fulfilled = <T>(value: T): PromiseSettledResult<T> => ({ status: 'fulfilled', value })
+    const walkImages = Array.from(
+      { length: 8 },
+      (_, i) => `walk-${i + 1}` as unknown as HTMLImageElement
+    )
+    const outcome = resolveAssetLoadOutcome(fulfilled(walkImages[0]), walkImages.map(fulfilled))
+    expect(outcome.run).toBeNull()
+    expect(outcome.failures).toEqual([])
   })
 })

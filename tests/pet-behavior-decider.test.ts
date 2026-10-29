@@ -43,7 +43,10 @@ const INVALID_CONFIG: BehaviorDeciderConfig = {
   restLieDurationSec: { minSec: Number.NaN, maxSec: 20 },
   restCooldownSec: -10,
   restChance: 1.5,
-  restSitShare: -0.1
+  restSitShare: -0.1,
+  runDurationSec: { minSec: 4, maxSec: 2 },
+  runCooldownSec: -10,
+  runChance: 1.5
 }
 
 describe('可复现性', () => {
@@ -471,7 +474,8 @@ describe('随机差异与输出有效性', () => {
 })
 
 describe('Task 11G：休息决策', () => {
-  /** 启用休息的测试配置：时长取确定值（min==max 不消耗采样随机数），概率 1 必休息 */
+  /** 启用休息的测试配置：时长取确定值（min==max 不消耗采样随机数），概率 1 必休息；
+   * runChance 0 禁用跑步（不消耗随机数，聚焦休息分支） */
   const REST_CONFIG: BehaviorDeciderConfig = {
     ...DEFAULT_BEHAVIOR_DECIDER_CONFIG,
     walkDurationSec: { minSec: 6, maxSec: 6 },
@@ -479,7 +483,10 @@ describe('Task 11G：休息决策', () => {
     restLieDurationSec: { minSec: 15, maxSec: 15 },
     restCooldownSec: 45,
     restChance: 1,
-    restSitShare: 1
+    restSitShare: 1,
+    runDurationSec: { minSec: 2, maxSec: 2 },
+    runCooldownSec: 45,
+    runChance: 0
   }
 
   it('冷却未归零时不产生休息决策（不消耗随机数，保持行走决策）', () => {
@@ -627,5 +634,178 @@ describe('Task 11G：休息决策', () => {
         targetDurationSec: 2
       })
     expect(decideBehavior(make())).toEqual(decideBehavior(make()))
+  })
+})
+
+describe('Task 11H：跑步决策', () => {
+  /** 启用跑步的测试配置：行走 6s 到期，跑步 2–4s，概率 0.5，冷却 45s */
+  const RUN_TEST_CONFIG: BehaviorDeciderConfig = {
+    ...DEFAULT_BEHAVIOR_DECIDER_CONFIG,
+    walkDurationSec: { minSec: 6, maxSec: 6 },
+    runDurationSec: { minSec: 2, maxSec: 4 },
+    runCooldownSec: 45,
+    runChance: 0.5,
+    restChance: 0
+  }
+  const walkInput = (overrides: Partial<BehaviorDeciderInput> = {}): BehaviorDeciderInput =>
+    input({
+      state: { kind: 'walking' },
+      elapsedSec: 6,
+      targetDurationSec: 6,
+      ...overrides
+    })
+
+  it('冷却归零且概率命中 → startRunning（时长在配置范围内采样）', () => {
+    const decision = decideBehavior(
+      walkInput({
+        config: RUN_TEST_CONFIG,
+        random: sequence([0, 0.5]),
+        runCooldownRemainingSec: 0
+      })
+    )
+    // 2 + 0.5 × (4 − 2) = 3
+    expect(decision).toEqual({ type: 'startRunning', durationSec: 3 })
+  })
+
+  it('冷却归零但概率未命中 → startIdle（保持原有到期待机决策）', () => {
+    const decision = decideBehavior(
+      walkInput({
+        config: RUN_TEST_CONFIG,
+        random: sequence([0.9]),
+        runCooldownRemainingSec: 0
+      })
+    )
+    expect(decision.type).toBe('startIdle')
+  })
+
+  it('冷却未归零 → startIdle 且不消耗跑步判定随机数', () => {
+    let randomCalls = 0
+    const random: RandomSource = () => {
+      randomCalls += 1
+      return 0
+    }
+    const decision = decideBehavior(
+      walkInput({ config: RUN_TEST_CONFIG, random, runCooldownRemainingSec: 10 })
+    )
+    expect(decision.type).toBe('startIdle')
+    // 仅待机时长采样消耗 1 次（默认 idle 范围 min < max）
+    expect(randomCalls).toBe(1)
+  })
+
+  it('未提供跑步冷却字段（undefined）→ 不启用跑步决策（旧调用方兼容）', () => {
+    let randomCalls = 0
+    const random: RandomSource = () => {
+      randomCalls += 1
+      return 0
+    }
+    const decision = decideBehavior(walkInput({ config: RUN_TEST_CONFIG, random }))
+    expect(decision.type).toBe('startIdle')
+    expect(randomCalls).toBe(1)
+  })
+
+  it('runChance 0 → 完全禁用跑步（连判定随机数也不消耗）', () => {
+    const config: BehaviorDeciderConfig = {
+      ...RUN_TEST_CONFIG,
+      idleDurationSec: { minSec: 1, maxSec: 1 },
+      runChance: 0
+    }
+    let randomCalls = 0
+    const random: RandomSource = () => {
+      randomCalls += 1
+      return 0
+    }
+    const decision = decideBehavior(walkInput({ config, random, runCooldownRemainingSec: 0 }))
+    expect(decision.type).toBe('startIdle')
+    // idle 时长 min==max 不消耗采样 → 0 次随机
+    expect(randomCalls).toBe(0)
+  })
+
+  it('概率命中时消耗 2 次随机（判定 + 时长采样）', () => {
+    let randomCalls = 0
+    const random: RandomSource = () => {
+      randomCalls += 1
+      return 0
+    }
+    const decision = decideBehavior(
+      walkInput({ config: RUN_TEST_CONFIG, random, runCooldownRemainingSec: 0 })
+    )
+    expect(decision.type).toBe('startRunning')
+    expect(randomCalls).toBe(2)
+  })
+
+  it('触界优先于跑步判定（与行走一致）', () => {
+    const decision = decideBehavior(
+      walkInput({
+        config: RUN_TEST_CONFIG,
+        random: sequence([0]),
+        runCooldownRemainingSec: 0,
+        hitBounds: { left: false, right: true, top: false, bottom: false }
+      })
+    )
+    expect(decision.type).toBe('startTurning')
+  })
+
+  it('running 到期 → startIdle（集成层映射为 RUN_END）', () => {
+    const decision = decideBehavior(
+      input({
+        state: { kind: 'running' },
+        elapsedSec: 3,
+        targetDurationSec: 3,
+        config: RUN_TEST_CONFIG,
+        random: sequence([0])
+      })
+    )
+    expect(decision.type).toBe('startIdle')
+  })
+
+  it('running 触界 → startTurning（边界安全与行走一致）', () => {
+    const decision = decideBehavior(
+      input({
+        state: { kind: 'running' },
+        elapsedSec: 1,
+        targetDurationSec: 3,
+        config: RUN_TEST_CONFIG,
+        random: sequence([0]),
+        hitBounds: { left: true, right: false, top: false, bottom: false }
+      })
+    )
+    expect(decision.type).toBe('startTurning')
+  })
+
+  it('running 未到期且未触界 → noAction', () => {
+    const decision = decideBehavior(
+      input({
+        state: { kind: 'running' },
+        elapsedSec: 1,
+        targetDurationSec: 3,
+        config: RUN_TEST_CONFIG,
+        random: sequence([0])
+      })
+    )
+    expect(decision.type).toBe('noAction')
+  })
+
+  it('非法 run 配置字段 → 回退默认值（默认参数内的判定仍可命中）', () => {
+    const decision = decideBehavior(
+      walkInput({
+        config: INVALID_CONFIG,
+        random: sequence([0, 0]),
+        runCooldownRemainingSec: 0
+      })
+    )
+    // 非法 runChance 1.5 → 回退默认 0.45，随机 0 < 0.45 命中；
+    // 非法 runDurationSec {4,2} → 回退默认 {3,5}，随机 0 → 3
+    expect(decision).toEqual({ type: 'startRunning', durationSec: 3 })
+  })
+
+  it('Task 11H-C：默认跑步参数为调优值（频率提高，行走与休息参数不变）', () => {
+    expect(DEFAULT_BEHAVIOR_DECIDER_CONFIG.runChance).toBe(0.45)
+    expect(DEFAULT_BEHAVIOR_DECIDER_CONFIG.runCooldownSec).toBe(20)
+    expect(DEFAULT_BEHAVIOR_DECIDER_CONFIG.runDurationSec).toEqual({ minSec: 3, maxSec: 5 })
+    // 行走与休息参数未被顺带修改
+    expect(DEFAULT_BEHAVIOR_DECIDER_CONFIG.walkDurationSec).toEqual({ minSec: 6, maxSec: 15 })
+    expect(DEFAULT_BEHAVIOR_DECIDER_CONFIG.restCooldownSec).toBe(45)
+    expect(DEFAULT_BEHAVIOR_DECIDER_CONFIG.restChance).toBe(0.4)
+    expect(DEFAULT_BEHAVIOR_DECIDER_CONFIG.restSitShare).toBe(0.6)
   })
 })

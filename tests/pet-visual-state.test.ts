@@ -7,7 +7,11 @@ import {
   type PetVisualState,
   type VisualStateIpc
 } from '../src/shared/pet-visual-state'
-import { PetBehaviorRuntime, type RuntimeWindow } from '../src/main/pet-behavior-runtime'
+import {
+  PetBehaviorRuntime,
+  type RuntimeConfig,
+  type RuntimeWindow
+} from '../src/main/pet-behavior-runtime'
 import type { RandomSource } from '../src/shared/pet-behavior-decider'
 import type { MovementBounds, Vec2 } from '../src/shared/movement-controller'
 
@@ -24,7 +28,10 @@ const FAST_CONFIG = {
     restLieDurationSec: { minSec: 15, maxSec: 15 },
     restCooldownSec: 45,
     restChance: 0,
-    restSitShare: 1
+    restSitShare: 1,
+    runDurationSec: { minSec: 2, maxSec: 2 },
+    runCooldownSec: 45,
+    runChance: 0
   }
 }
 
@@ -66,7 +73,11 @@ function scriptedRandom(values: number[]): RandomSource {
 }
 
 /** 构造带广播记录的运行时 harness（手动时钟） */
-function makeRuntime(options?: { window?: FakeWindow; random?: RandomSource }): {
+function makeRuntime(options?: {
+  window?: FakeWindow
+  random?: RandomSource
+  config?: RuntimeConfig
+}): {
   win: FakeWindow
   runtime: PetBehaviorRuntime
   broadcasts: PetVisualState[]
@@ -81,7 +92,7 @@ function makeRuntime(options?: { window?: FakeWindow; random?: RandomSource }): 
     clock: (): number => now,
     random: options?.random ?? scriptedRandom([0]),
     scheduler: (): (() => void) => () => undefined,
-    config: FAST_CONFIG,
+    config: options?.config ?? FAST_CONFIG,
     onVisualStateChange: (state): void => {
       broadcasts.push(state)
     }
@@ -99,7 +110,16 @@ function makeRuntime(options?: { window?: FakeWindow; random?: RandomSource }): 
 
 describe('pet-visual-state 协议校验', () => {
   it('合法载荷通过校验（全部 kind 与 facing 组合）', () => {
-    const kinds = ['idle', 'walking', 'turning', 'sitting', 'lying', 'paused', 'dragging'] as const
+    const kinds = [
+      'idle',
+      'walking',
+      'turning',
+      'running',
+      'sitting',
+      'lying',
+      'paused',
+      'dragging'
+    ] as const
     const facings = ['left', 'right', 'up', 'down'] as const
     for (const kind of kinds) {
       for (const facing of facings) {
@@ -163,8 +183,8 @@ describe('PetBehaviorRuntime 视觉状态广播', () => {
     expect(h.broadcasts[h.broadcasts.length - 1]).toEqual({ kind: 'walking', facing: 'left' })
   })
 
-  it('行走方向切换时朝向正确更新', () => {
-    // 1. 待机到期选向右（random 0）→ 2. 触界转向 → 3. 恢复行走选向左（random 0.25 → index 1）
+  it('行走方向切换时朝向正确更新（触边立即掉头，Task 11H-B）', () => {
+    // 1. 待机到期选向右（random 0）→ 2. 向右行走触界 → 立即反向（状态保持 walking）
     const win = new FakeWindow(1670, 100)
     const h = makeRuntime({ window: win, random: scriptedRandom([0, 0, 0.25]) })
     h.runtime.start()
@@ -172,10 +192,10 @@ describe('PetBehaviorRuntime 视觉状态广播', () => {
     for (let t = 100; t <= 1300; t += 100) {
       h.tick(t)
     }
-    // 向右行走触界 → turning（朝向保持 right）
-    expect(h.runtime.currentState.kind).toBe('turning')
-    expect(h.broadcasts[h.broadcasts.length - 1]).toEqual({ kind: 'turning', facing: 'right' })
-    // 转向 0.5s 到期后恢复行走，方向向左
+    // 向右行走触界（t=1300 钳制 1680）→ 广播保持 walking、朝向立即反转
+    expect(h.runtime.currentState.kind).toBe('walking')
+    expect(h.broadcasts[h.broadcasts.length - 1]).toEqual({ kind: 'walking', facing: 'left' })
+    // 反向后持续向左行走，朝向稳定不再变化
     for (let t = 1400; t <= 1900; t += 100) {
       h.tick(t)
     }
@@ -183,7 +203,7 @@ describe('PetBehaviorRuntime 视觉状态广播', () => {
     expect(h.broadcasts[h.broadcasts.length - 1]).toEqual({ kind: 'walking', facing: 'left' })
   })
 
-  it('触边转向时状态与朝向一致（转向期保持行走朝向）', () => {
+  it('触边掉头时广播保持 walking 并立即更新朝向（Task 11H-B）', () => {
     const win = new FakeWindow(1670, 100)
     const h = makeRuntime({ window: win })
     h.runtime.start()
@@ -191,8 +211,10 @@ describe('PetBehaviorRuntime 视觉状态广播', () => {
       h.tick(t)
     }
     const last = h.broadcasts[h.broadcasts.length - 1]
-    expect(last.kind).toBe('turning')
-    expect(last.facing).toBe('right')
+    expect(last.kind).toBe('walking')
+    expect(last.facing).toBe('left')
+    // 掉头不产生中间等待状态（无 turning 广播）
+    expect(h.broadcasts.some((state) => state.kind === 'turning')).toBe(false)
   })
 
   it('拖动开始广播 dragging；松手后广播恢复的状态', () => {
@@ -396,5 +418,47 @@ describe('createVisualStateSubscription 订阅工厂', () => {
     createVisualStateSubscription(ipc, BROADCAST_CHANNEL, QUERY_CHANNEL, (s) => received.push(s))
     await new Promise((r) => setTimeout(r, 30))
     expect(received).toEqual([])
+  })
+})
+
+describe('Task 11H：跑步状态广播', () => {
+  /** 启用跑步的快节奏配置：idle 1s → walk 2s 到期必跑步（runChance 1、冷却 0） */
+  const RUN_ENABLED_CONFIG: RuntimeConfig = {
+    decider: {
+      ...FAST_CONFIG.decider,
+      walkDurationSec: { minSec: 2, maxSec: 2 },
+      runDurationSec: { minSec: 3, maxSec: 3 },
+      runCooldownSec: 0,
+      runChance: 1
+    }
+  }
+
+  it('running 为合法 kind（IPC 载荷校验通过，左右朝向均可）', () => {
+    expect(isPetVisualState({ kind: 'running', facing: 'right' })).toBe(true)
+    expect(isPetVisualState({ kind: 'running', facing: 'left' })).toBe(true)
+  })
+
+  it('行走到期进入跑步时广播 running 与当前朝向', () => {
+    const h = makeRuntime({ config: RUN_ENABLED_CONFIG })
+    h.runtime.start()
+    // idle 1s（1.1s 到期）→ walking 2s（3.1s 到期）→ running
+    for (let t = 100; t <= 3300; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('running')
+    expect(h.broadcasts).toContainEqual({ kind: 'running', facing: 'right' })
+  })
+
+  it('跑步结束回到待机时广播 idle（RUN_END 转换）', () => {
+    const h = makeRuntime({ config: RUN_ENABLED_CONFIG })
+    h.runtime.start()
+    // running 3s 到期（6.1s+ 浮点余量）→ idle
+    for (let t = 100; t <= 6500; t += 100) {
+      h.tick(t)
+    }
+    expect(h.runtime.currentState.kind).toBe('idle')
+    const kinds = h.broadcasts.map((state) => state.kind)
+    expect(kinds).toContain('running')
+    expect(kinds[kinds.length - 1]).toBe('idle')
   })
 })

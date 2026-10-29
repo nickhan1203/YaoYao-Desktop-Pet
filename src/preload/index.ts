@@ -4,6 +4,7 @@ import {
   type PetVisualState,
   type VisualStateIpc
 } from '../shared/pet-visual-state'
+import { DEV_DEBUG_COMMAND_CHANNEL, DEV_DEBUG_GET_STATE_CHANNEL } from '../shared/dev-debug'
 
 /** 视觉状态广播通道（与主进程 index.ts 保持一致） */
 const VISUAL_STATE_CHANNEL = 'pet:visual-state-changed'
@@ -42,17 +43,17 @@ const yaoyaoAPI = {
   subscribeVisualState: (callback: (state: PetVisualState) => void): (() => void) =>
     createVisualStateSubscription(ipc, VISUAL_STATE_CHANNEL, GET_VISUAL_STATE_CHANNEL, callback),
   /**
-   * 开发预览专用（Task 11F-B）：向固定窄通道发送无载荷信号，暂停/恢复
-   * 主进程自动行为。安全边界：主进程仅在开发构建（!app.isPackaged）注册
-   * 对应 handler——生产环境下发送到未注册通道为无操作；renderer 侧调用点
-   * 位于 import.meta.env.DEV 死分支，生产构建整段剔除。
+   * 开发调试专用（Task 11H-C）：向固定窄通道发送调试命令（载荷为
+   * 白名单字符串，主进程侧校验）。安全边界：主进程仅在开发构建
+   *（!app.isPackaged）注册对应 handler——生产环境下发送到未注册通道
+   * 为无操作；renderer 侧调用点位于开发面板（import.meta.env.DEV 门控
+   * 动态加载），生产构建整段剔除。
    */
-  suspendAutoBehaviorForDevPreview: (): void => {
-    ipcRenderer.send('pet:dev-preview-suspend-auto')
+  devDebugCommand: (command: string): void => {
+    ipcRenderer.send(DEV_DEBUG_COMMAND_CHANNEL, command)
   },
-  resumeAutoBehaviorForDevPreview: (): void => {
-    ipcRenderer.send('pet:dev-preview-resume-auto')
-  }
+  /** 开发调试专用（Task 11H-C）：查询调试控制状态；生产环境无 handler 时 reject */
+  getDevDebugState: (): Promise<unknown> => ipcRenderer.invoke(DEV_DEBUG_GET_STATE_CHANNEL)
 }
 
 contextBridge.exposeInMainWorld('yaoyao', yaoyaoAPI)

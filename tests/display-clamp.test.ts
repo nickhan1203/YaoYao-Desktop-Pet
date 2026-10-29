@@ -77,7 +77,8 @@ describe('clampWindowToDisplays', () => {
     expect(clamped.x).toBe(SECONDARY.x + SECONDARY.width - MIN_VISIBLE_PX)
     expect(clamped.y).toBe(SECONDARY.y + SECONDARY.height - MIN_VISIBLE_PX)
     // 窗口与副屏工作区确实相交
-    const intersects = clamped.x < SECONDARY.x + SECONDARY.width && clamped.x + PET.width > SECONDARY.x
+    const intersects =
+      clamped.x < SECONDARY.x + SECONDARY.width && clamped.x + PET.width > SECONDARY.x
     expect(intersects).toBe(true)
   })
 

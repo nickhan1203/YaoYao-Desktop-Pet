@@ -18,6 +18,12 @@ export const PET_PLACEHOLDER_COLOR = 0xe8b04b
 /** 自动行走的默认速度（CSS px / 秒）：缓慢踱步，低干扰 */
 export const PET_WALK_SPEED_PX_PER_SEC = 60
 
+/**
+ * 自动跑步的默认速度（CSS px / 秒，Task 11H）：
+ * 行走速度的 1.6 倍（60 × 1.6），肉眼可辨的提速但不至于瞬移。
+ */
+export const PET_RUN_SPEED_PX_PER_SEC = 96
+
 /** 校验占位圆形是否始终在画布范围内。 */
 export function isPlaceholderRadiusWithinCanvas(): boolean {
   return PET_PLACEHOLDER_RADIUS * 2 <= Math.min(PET_CANVAS_WIDTH, PET_CANVAS_HEIGHT)

@@ -6,10 +6,10 @@
  * 不操作窗口、不驱动动画。
  *
  * 两层接口：
- * - computeMovement：纯坐标计算，供已确认处于行走状态的上层使用；
- * - advancePet：接收状态机状态，仅 walking 状态推进位置，
+ * - computeMovement：纯坐标计算，供已确认处于移动状态（walking / running）的上层使用；
+ * - advancePet：接收状态机状态，仅 walking / running 状态推进位置，
  *   idle/turning/paused/dragging 一律返回原位置与零位移，
- *   从类型与行为上双重保证非行走状态不会自行移动。
+ *   从类型与行为上双重保证非移动状态不会自行移动。
  *
  * 与 display-clamp.ts 的语义区别：
  * - display-clamp（主进程）约束"窗口可见性"：拖动时至少保留 40px 可见，
@@ -121,18 +121,26 @@ export function computeMovement(input: MovementInput): MovementResult {
 }
 
 /**
- * 状态感知的一步推进：仅 walking 状态计算移动，
+ * 状态感知的一步推进：仅 walking / running 状态计算移动（Task 11H 起跑步
+ * 同为自动水平移动，速度差异由调用方通过 speedPxPerSec 传入），
  * 其余状态（idle/turning/paused/dragging）返回原位置与零位移。
  */
 export function advancePet(state: PetState, input: MovementInput): MovementResult {
-  if (state.kind !== 'walking') {
-    return { position: { x: input.position.x, y: input.position.y }, movedDistance: 0, hitBounds: NO_HIT }
+  if (state.kind !== 'walking' && state.kind !== 'running') {
+    return {
+      position: { x: input.position.x, y: input.position.y },
+      movedDistance: 0,
+      hitBounds: NO_HIT
+    }
   }
   return computeMovement(input)
 }
 
 /** 宠物窗口左上角允许的活动范围：使宠物整体位于边界内。 */
-function activityRange(size: Size, bounds: MovementBounds): {
+function activityRange(
+  size: Size,
+  bounds: MovementBounds
+): {
   minX: number
   maxX: number
   minY: number

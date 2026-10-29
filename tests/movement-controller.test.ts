@@ -152,19 +152,25 @@ describe('边界处理', () => {
   })
 
   it('到达左边界：钳制到 x=0 且 hitBounds.left', () => {
-    const result = computeMovement(input({ position: { x: 5, y: 100 }, direction: { x: -1, y: 0 } }))
+    const result = computeMovement(
+      input({ position: { x: 5, y: 100 }, direction: { x: -1, y: 0 } })
+    )
     expect(result.position).toEqual({ x: 0, y: 100 })
     expect(result.hitBounds.left).toBe(true)
   })
 
   it('到达上边界：钳制到 y=0 且 hitBounds.top', () => {
-    const result = computeMovement(input({ position: { x: 100, y: 5 }, direction: { x: 0, y: -1 } }))
+    const result = computeMovement(
+      input({ position: { x: 100, y: 5 }, direction: { x: 0, y: -1 } })
+    )
     expect(result.position).toEqual({ x: 100, y: 0 })
     expect(result.hitBounds.top).toBe(true)
   })
 
   it('到达下边界：钳制到 maxY 且 hitBounds.bottom', () => {
-    const result = computeMovement(input({ position: { x: 100, y: 830 }, direction: { x: 0, y: 1 } }))
+    const result = computeMovement(
+      input({ position: { x: 100, y: 830 }, direction: { x: 0, y: 1 } })
+    )
     expect(result.position).toEqual({ x: 100, y: 840 })
     expect(result.hitBounds.bottom).toBe(true)
   })

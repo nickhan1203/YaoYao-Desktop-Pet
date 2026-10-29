@@ -16,15 +16,15 @@ declare global {
        */
       subscribeVisualState: (callback: (state: PetVisualState) => void) => () => void
       /**
-       * 开发预览专用（Task 11F-B）：暂停主进程自动行为（固定窄通道，无载荷）。
-       * 生产构建主进程不注册对应 handler，调用为无操作。
+       * 开发调试专用（Task 11H-C）：发送调试命令（白名单字符串载荷，
+       * 主进程侧校验；生产构建不注册 handler，调用为无操作）。
        */
-      suspendAutoBehaviorForDevPreview: () => void
+      devDebugCommand: (command: string) => void
       /**
-       * 开发预览专用（Task 11F-B）：恢复主进程自动行为（固定窄通道，无载荷）。
-       * 生产构建主进程不注册对应 handler，调用为无操作。
+       * 开发调试专用（Task 11H-C）：查询调试控制状态
+       * { debugControlled: boolean }；生产环境无 handler 时 reject。
        */
-      resumeAutoBehaviorForDevPreview: () => void
+      getDevDebugState: () => Promise<unknown>
     }
   }
 }

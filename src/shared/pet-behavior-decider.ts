@@ -17,8 +17,10 @@
  * - startIdle（当前为 walking）→ WALK_END
  * - startIdle（当前为 turning）→ TURN_END
  * - startIdle（当前为 sitting / lying）→ REST_END（Task 11G）
+ * - startIdle（当前为 running）→ RUN_END（Task 11H）
  * - startSitting → SIT_START（Task 11G）
  * - startLying → LIE_START（Task 11G）
+ * - startRunning → RUN_START（Task 11H）
  *
  * 可复现性：相同输入、配置与随机数序列产生完全相同的决策。
  * 随机消耗顺序固定：每次决策按分支顺序消耗，详见各分支注释。
@@ -55,6 +57,12 @@ export interface BehaviorDeciderConfig {
   restChance: number
   /** 休息分流中坐下的占比 [0, 1]（其余为趴卧，Task 11G） */
   restSitShare: number
+  /** 单次跑步的目标时长范围（Task 11H） */
+  runDurationSec: DurationRange
+  /** 两次跑步之间的冷却时间（秒，Task 11H；运行时从 RUN_END 起计时） */
+  runCooldownSec: number
+  /** 行走到期时进入跑步的概率 [0, 1]（Task 11H；0 表示禁用跑步） */
+  runChance: number
 }
 
 /**
@@ -63,6 +71,9 @@ export interface BehaviorDeciderConfig {
  * 转向 0.4–0.8 秒（一次自然的转身时长）、70% 转向后继续行走。
  * Task 11G 休息初始参数（调试值，非最终频率）：坐下 8–15 秒、
  * 趴卧 15–30 秒、冷却 45 秒、待机到期 40% 概率休息（其中 60% 坐下）。
+ * Task 11H 跑步初始参数：时长 2–4 秒、冷却 45 秒、行走到期 25% 概率。
+ * Task 11H-C 调优（提高跑步出现频率）：时长 3–5 秒、冷却 20 秒、
+ * 行走到期 45% 概率；行走速度与休息参数保持不变。
  */
 export const DEFAULT_BEHAVIOR_DECIDER_CONFIG: BehaviorDeciderConfig = {
   idleDurationSec: { minSec: 2, maxSec: 6 },
@@ -73,7 +84,10 @@ export const DEFAULT_BEHAVIOR_DECIDER_CONFIG: BehaviorDeciderConfig = {
   restLieDurationSec: { minSec: 15, maxSec: 30 },
   restCooldownSec: 45,
   restChance: 0.4,
-  restSitShare: 0.6
+  restSitShare: 0.6,
+  runDurationSec: { minSec: 3, maxSec: 5 },
+  runCooldownSec: 20,
+  runChance: 0.45
 }
 
 /**
@@ -106,6 +120,12 @@ export interface BehaviorDeciderInput {
    * 消耗随机数）；≤ 0 表示可以休息。
    */
   restCooldownRemainingSec?: number
+  /**
+   * 跑步冷却剩余秒数（Task 11H）。语义与 restCooldownRemainingSec 一致：
+   * undefined 表示未启用跑步决策（不消耗随机数、行为与旧版本完全一致）；
+   * > 0 表示冷却中（不消耗随机数）；≤ 0 表示行走到期时可能选择跑步。
+   */
+  runCooldownRemainingSec?: number
   config: BehaviorDeciderConfig
   random: RandomSource
 }
@@ -118,6 +138,7 @@ export type BehaviorDecision =
   | { type: 'startIdle'; durationSec: number }
   | { type: 'startSitting'; durationSec: number }
   | { type: 'startLying'; durationSec: number }
+  | { type: 'startRunning'; durationSec: number }
 
 const NO_ACTION: BehaviorDecision = { type: 'noAction' }
 
@@ -163,6 +184,8 @@ function resolveConfig(config: BehaviorDeciderConfig): BehaviorDeciderConfig {
   const restChance = config?.restChance
   const restSitShare = config?.restSitShare
   const restCooldownSec = config?.restCooldownSec
+  const runChance = config?.runChance
+  const runCooldownSec = config?.runCooldownSec
   return {
     idleDurationSec: range(config?.idleDurationSec, fallback.idleDurationSec),
     turnDurationSec: range(config?.turnDurationSec, fallback.turnDurationSec),
@@ -184,7 +207,16 @@ function resolveConfig(config: BehaviorDeciderConfig): BehaviorDeciderConfig {
     restSitShare:
       Number.isFinite(restSitShare) && restSitShare >= 0 && restSitShare <= 1
         ? restSitShare
-        : fallback.restSitShare
+        : fallback.restSitShare,
+    runDurationSec: range(config?.runDurationSec, fallback.runDurationSec),
+    runCooldownSec:
+      Number.isFinite(runCooldownSec) && runCooldownSec >= 0
+        ? runCooldownSec
+        : fallback.runCooldownSec,
+    runChance:
+      Number.isFinite(runChance) && runChance >= 0 && runChance <= 1
+        ? runChance
+        : fallback.runChance
   }
 }
 
@@ -218,7 +250,11 @@ function pickDirection(nextRandom: () => number): Vec2 {
  *   1 次概率 + 1 次坐/趴分流；命中休息且时长范围 min < max 时再消耗
  *   1 次采样时长）；未命中或未启用则按行走决策消耗 2 次（方向、行走时长）。
  * - walking 触界：1 次（转向时长）
- * - walking 达到活动上限：1 次（待机时长）
+ * - walking 达到活动上限：先判定跑步（Task 11H：冷却归零且 runChance > 0
+ *   时消耗 1 次概率；命中且时长范围 min < max 时再消耗 1 次采样时长）；
+ *   未命中或未启用则消耗 1 次（待机时长）
+ * - running 触界：1 次（转向时长，Task 11H）
+ * - running 达到目标时长：1 次（待机时长，Task 11H 的 RUN_END）
  * - turning 达到阈值：1 次（分流）+ 2 次（行走方向与行走时长，或待机时长）
  * - sitting / lying 达到阈值：1 次（待机时长；Task 11G 的 REST_END）
  *
@@ -279,7 +315,40 @@ export function decideBehavior(input: BehaviorDeciderInput): BehaviorDecision {
           durationSec: sampleDurationSec(config.turnDurationSec, nextRandom)
         }
       }
-      // 连续活动达到目标时长：进入短暂待机。
+      // 连续活动达到目标时长：先判定是否提速跑步（Task 11H），
+      // 未命中或未启用则进入短暂待机。
+      if (elapsed >= target) {
+        // 仅在调用方提供冷却值且已归零、且 runChance > 0 时才消耗随机数
+        //（未启用时行为与旧版本完全一致，不消耗任何随机数）。
+        const runCooldown = input.runCooldownRemainingSec
+        const runAllowed =
+          runCooldown !== undefined &&
+          Number.isFinite(runCooldown) &&
+          runCooldown <= 0 &&
+          config.runChance > 0
+        if (runAllowed && nextRandom() < config.runChance) {
+          return {
+            type: 'startRunning',
+            durationSec: sampleDurationSec(config.runDurationSec, nextRandom)
+          }
+        }
+        return {
+          type: 'startIdle',
+          durationSec: sampleDurationSec(config.idleDurationSec, nextRandom)
+        }
+      }
+      return NO_ACTION
+    }
+
+    case 'running': {
+      // Task 11H：跑步触界仍请求转向（与行走一致，边界优先于时长）。
+      if (hasHit(input.hitBounds)) {
+        return {
+          type: 'startTurning',
+          durationSec: sampleDurationSec(config.turnDurationSec, nextRandom)
+        }
+      }
+      // 跑步达到目标时长：回到待机（集成层映射为 RUN_END，并重置跑步冷却）。
       if (elapsed >= target) {
         return {
           type: 'startIdle',

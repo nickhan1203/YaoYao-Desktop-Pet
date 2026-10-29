@@ -48,3 +48,42 @@ body {
 .pet-canvas:active {
   cursor: grabbing;
 }
+
+/* 开发调试面板（Task 11H-C，仅开发构建加载；普通窗口非透明背景） */
+.dev-panel {
+  box-sizing: border-box;
+  height: 100%;
+  padding: 12px 14px;
+  background: #f6f6f8;
+  overflow: auto;
+}
+
+.dev-panel h1 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.dev-panel-status {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.dev-panel-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dev-panel-buttons button {
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-panel-note {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: #666;
+}

@@ -1,7 +1,8 @@
 import { app, BrowserWindow, screen } from 'electron'
-import { electronApp, optimizer } from '@electron-toolkit/utils'
+import { join } from 'path'
+import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { createPetWindow } from './pet-window'
-import { registerPetIpcHandlers, registerDevPreviewAutoBehaviorHandlers } from './ipc-handlers'
+import { registerPetIpcHandlers, registerDevDebugHandlers } from './ipc-handlers'
 import { PetBehaviorRuntime, type RuntimeWindow } from './pet-behavior-runtime'
 import { PET_WINDOW_HEIGHT, PET_WINDOW_WIDTH } from '../shared/pet-config'
 import type { PetVisualState } from '../shared/pet-visual-state'
@@ -20,19 +21,23 @@ process.on('unhandledRejection', (reason) => {
 
 let petWindow: BrowserWindow | null = null
 let behaviorRuntime: PetBehaviorRuntime | null = null
+/** 开发调试面板窗口（Task 11H-C，仅开发构建创建；生产为 null） */
+let devPanelWindow: BrowserWindow | null = null
 
 /**
  * 创建行为运行时：视觉状态变化时向 renderer 广播（单向），
  * 窗口销毁/renderer 不存在时不发送（isDestroyed 防御，不抛异常）。
+ * Task 11H-C：开发调试面板窗口同样接收广播（面板显示实时状态）。
  */
 function createBehaviorRuntime(): PetBehaviorRuntime {
   return new PetBehaviorRuntime({
     window: createRuntimeWindow(),
     getBounds: getWalkBounds,
     onVisualStateChange: (state: PetVisualState): void => {
-      const win = petWindow
-      if (win && !win.isDestroyed()) {
-        win.webContents.send(VISUAL_STATE_CHANNEL, state)
+      for (const win of [petWindow, devPanelWindow]) {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send(VISUAL_STATE_CHANNEL, state)
+        }
       }
     }
   })
@@ -75,6 +80,42 @@ function getWalkBounds(): MovementBounds {
   return display.workArea
 }
 
+/**
+ * 创建开发调试面板窗口（Task 11H-C）：仅开发构建调用。
+ * - 独立小窗口，不遮挡桌宠；加载同一 renderer 入口的 #dev-panel 路由
+ *   （App 按 hash 动态挂载 DevBehaviorPanel，import.meta.env.DEV 门控，
+ *   生产构建死代码剔除）；
+ * - 安全基线与桌宠窗口一致（sandbox 开启、contextIsolation 开启、
+ *   nodeIntegration 关闭），仅通过 preload 暴露的最小 API 通信；
+ * - 面板关闭仅置空引用，不影响桌宠窗口与行为运行时。
+ */
+function createDevPanelWindow(): void {
+  if (devPanelWindow && !devPanelWindow.isDestroyed()) {
+    devPanelWindow.focus()
+    return
+  }
+  if (!is.dev || !process.env['ELECTRON_RENDERER_URL']) {
+    return
+  }
+  devPanelWindow = new BrowserWindow({
+    width: 360,
+    height: 340,
+    title: '幺幺调试面板（仅开发）',
+    resizable: false,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  })
+  devPanelWindow.on('closed', () => {
+    devPanelWindow = null
+  })
+  void devPanelWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}#dev-panel`)
+}
+
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
@@ -106,23 +147,21 @@ app.whenReady().then(() => {
     }
   )
 
-  // 开发预览自动行为控制（Task 11F-B）：仅开发构建注册（主进程强制校验，
-  // 不依赖 renderer 的 DEV 判断）。复用 stop()/start() 而非 pause()/resume()：
-  // pause 会广播 paused 视觉状态，导致 renderer 中断姿态预览；stop 只冻结
-  // 行为循环（不动窗口、不改视觉状态），start 从窗口当前位置恢复自动行为，
-  // 保持 Task 11D 的水平轨道规则（状态机与移动控制器不变）。
-  // 已知 dev-only 代价：恢复后行为时长基准重置（start 重新采样目标时长）。
+  // 开发调试控制（Task 11H-C）：仅开发构建注册（主进程强制校验，不依赖
+  // renderer 的 DEV 判断）。命令载荷经白名单校验后触发行为运行时的调试
+  // 方法（合成决策走状态机，主进程仍是行为与窗口运动的唯一权威）；
+  // 同时打开开发调试面板窗口（按钮控制，替代已移除的键盘姿态预览）。
   if (!app.isPackaged) {
-    registerDevPreviewAutoBehaviorHandlers({
-      suspendAutoBehavior: (): void => {
-        behaviorRuntime?.stop()
-        console.log('[dev-preview] 自动行为已暂停（姿态预览）')
+    registerDevDebugHandlers({
+      forceBehavior: (target): void => {
+        behaviorRuntime?.debugForceBehavior(target)
       },
       resumeAutoBehavior: (): void => {
-        behaviorRuntime?.start()
-        console.log('[dev-preview] 自动行为已恢复')
-      }
+        behaviorRuntime?.debugResumeAutoBehavior()
+      },
+      isDebugControlled: (): boolean => behaviorRuntime?.isDebugControlled ?? false
     })
+    createDevPanelWindow()
   }
 
   // 窗口销毁时停止运行循环，避免访问已销毁的 BrowserWindow。

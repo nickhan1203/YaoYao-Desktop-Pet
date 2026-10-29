@@ -1,14 +1,18 @@
 import { ipcMain, screen, type BrowserWindow } from 'electron'
 import { clampWindowToDisplays, type Rect } from './display-clamp'
 import { isPetVisualState, type PetVisualState } from '../shared/pet-visual-state'
+import {
+  DEV_DEBUG_COMMAND_CHANNEL,
+  DEV_DEBUG_GET_STATE_CHANNEL,
+  parseDevDebugCommand,
+  type DebugBehaviorTarget,
+  type DevDebugState
+} from '../shared/dev-debug'
 
 const DRAG_START_CHANNEL = 'pet:drag-start'
 const DRAG_END_CHANNEL = 'pet:drag-end'
 /** 视觉状态查询通道：renderer 订阅时获取当前状态（一次性 invoke） */
 const GET_VISUAL_STATE_CHANNEL = 'pet:get-visual-state'
-/** 开发预览自动行为控制通道（Task 11F-B，无载荷，仅开发构建注册） */
-const DEV_PREVIEW_SUSPEND_CHANNEL = 'pet:dev-preview-suspend-auto'
-const DEV_PREVIEW_RESUME_CHANNEL = 'pet:dev-preview-resume-auto'
 
 /** 拖动跟随的轮询间隔（约 60fps） */
 const DRAG_POLL_INTERVAL_MS = 16
@@ -32,29 +36,53 @@ export interface VisualStateHandlers {
   getVisualState?: () => PetVisualState | null
 }
 
-/** 开发预览自动行为控制回调（Task 11F-B） */
-export interface DevPreviewAutoBehaviorCallbacks {
-  /** 冻结自动行为（复用行为运行时 stop：不改视觉状态、不动窗口） */
-  suspendAutoBehavior: () => void
-  /** 恢复自动行为（复用行为运行时 start：从窗口当前位置继续） */
+/**
+ * 开发调试控制回调（Task 11H-C）。
+ * 主进程仍是行为状态与窗口运动的唯一权威：回调只触发行为运行时
+ * 已有的调试方法（合成决策走状态机，不绕过内部状态）。
+ */
+export interface DevDebugCallbacks {
+  /** 强制目标行为（进入调试控制模式，自动决策挂起） */
+  forceBehavior: (target: DebugBehaviorTarget) => void
+  /** 释放调试控制，恢复自动决策 */
   resumeAutoBehavior: () => void
+  /** 当前是否处于调试控制模式 */
+  isDebugControlled: () => boolean
 }
 
 /**
- * 注册开发预览专用的自动行为暂停/恢复通道（Task 11F-B）。
+ * 注册开发调试控制通道（Task 11H-C，替换 Task 11F-B 的预览暂停通道）。
  *
  * 最小权限与安全边界：
- * - 仅两条固定窄通道，无载荷、无返回值，不暴露任何 Electron API；
+ * - 命令通道为固定窄通道，载荷经 parseDevDebugCommand 白名单校验
+ *（非法载荷直接忽略，不回执、不抛错）；
+ * - 状态查询通道返回固定结构 { debugControlled: boolean }，无其他信息；
  * - 只允许在开发构建中调用（由 index.ts 以 !app.isPackaged 门控注册；
  *   生产构建不注册 handler，任何发送都是无操作）；
- * - 复用行为运行时已有的 stop()/start()（幂等、可重复调用），
- *   不修改正式自动行为逻辑、不新增行为状态。
+ * - 不暴露任何 Electron API、文件系统或 shell 能力。
  */
-export function registerDevPreviewAutoBehaviorHandlers(
-  callbacks: DevPreviewAutoBehaviorCallbacks
-): void {
-  ipcMain.on(DEV_PREVIEW_SUSPEND_CHANNEL, () => callbacks.suspendAutoBehavior())
-  ipcMain.on(DEV_PREVIEW_RESUME_CHANNEL, () => callbacks.resumeAutoBehavior())
+export function registerDevDebugHandlers(callbacks: DevDebugCallbacks): void {
+  ipcMain.on(DEV_DEBUG_COMMAND_CHANNEL, (_event, payload: unknown) => {
+    const command = parseDevDebugCommand(payload)
+    if (command === null) {
+      return
+    }
+    const targets: Record<Exclude<typeof command, 'resume-auto'>, DebugBehaviorTarget> = {
+      idle: 'idle',
+      walk: 'walking',
+      run: 'running',
+      sit: 'sitting',
+      lie: 'lying'
+    }
+    if (command === 'resume-auto') {
+      callbacks.resumeAutoBehavior()
+      return
+    }
+    callbacks.forceBehavior(targets[command])
+  })
+  ipcMain.handle(DEV_DEBUG_GET_STATE_CHANNEL, (): DevDebugState => ({
+    debugControlled: callbacks.isDebugControlled()
+  }))
 }
 
 /**

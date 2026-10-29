@@ -6,13 +6,22 @@
  * - idle：待机，无自动行为进行中。
  * - walking：行走中（自动行为）。
  * - turning：转向中（自动行为）。
+ * - running：跑步中（自动行为，Task 11H；与 walking 同为水平移动，
+ *   速度更快；与 sitting / lying 互斥——休息到期必须先 REST_END 回 idle，
+ *   不允许从休息直接开始跑步）。
  * - sitting：坐着休息中（自动行为，Task 11G）。
  * - lying：趴卧休息中（自动行为，Task 11G）。
  * - paused：已暂停，restore 记录暂停前的自动行为状态；RESUME 时恢复。
  * - dragging：用户拖动中，restore 记录拖动前的状态（自动行为或 paused），
  *   拖动结束后恢复到 restore，避免无条件回到 walking。
  *
- * 优先级：dragging > paused > 自动行为（walking / turning / sitting / lying）。
+ * 优先级：dragging > paused > 自动行为（walking / turning / running / sitting / lying）。
+ *
+ * Task 11H 跑步行为约束：
+ * - running 只能从 idle 或 walking 进入（RUN_START）；
+ * - running 与 walking 互斥（同一时刻至多一个移动状态）；
+ * - running 到期经 RUN_END 回 idle；触界仍走 TURN_START 转向；
+ * - 拖动结束会取消跑步（回到 idle，不自动恢复，同休息的取消语义）。
  *
  * Task 11G 休息行为约束：
  * - sitting / lying 只能从 idle 进入（SIT_START / LIE_START），
@@ -40,6 +49,10 @@ export interface TurningState {
   kind: 'turning'
 }
 
+export interface RunningState {
+  kind: 'running'
+}
+
 export interface SittingState {
   kind: 'sitting'
 }
@@ -61,10 +74,18 @@ export interface DraggingState {
 }
 
 /** 自动行为状态（可被 paused / dragging 中断的状态） */
-export type AutoState = IdleState | WalkingState | TurningState | SittingState | LyingState
+export type AutoState =
+  IdleState | WalkingState | TurningState | RunningState | SittingState | LyingState
 
 export type PetState =
-  IdleState | WalkingState | TurningState | SittingState | LyingState | PausedState | DraggingState
+  | IdleState
+  | WalkingState
+  | TurningState
+  | RunningState
+  | SittingState
+  | LyingState
+  | PausedState
+  | DraggingState
 
 export type PetEvent =
   /** 自动行为启动：开始行走（对应"自动行为启动或恢复"中的启动部分） */
@@ -75,6 +96,10 @@ export type PetEvent =
   | { type: 'TURN_START' }
   /** 转向结束 → 待机 */
   | { type: 'TURN_END' }
+  /** 开始跑步（待机或行走中均可，Task 11H） */
+  | { type: 'RUN_START' }
+  /** 跑步结束 → 待机（Task 11H） */
+  | { type: 'RUN_END' }
   /** 开始坐下休息（仅待机时可进入，Task 11G） */
   | { type: 'SIT_START' }
   /** 开始趴卧休息（仅待机时可进入，Task 11G） */
@@ -116,9 +141,27 @@ export function transition(state: PetState, event: PetEvent): PetState {
     }
 
     case 'TURN_START': {
-      // 待机或行走中均可开始转向；paused / dragging 期间忽略。
-      if (state.kind === 'idle' || state.kind === 'walking') {
+      // 待机、行走或跑步中均可开始转向；paused / dragging 期间忽略。
+      if (state.kind === 'idle' || state.kind === 'walking' || state.kind === 'running') {
         return { kind: 'turning' }
+      }
+      return state
+    }
+
+    case 'RUN_START': {
+      // Task 11H：仅待机或行走中可开始跑步（walking → running 的提速）；
+      // 休息中 / turning / paused / dragging 均忽略（不允许绕过休息退出保护，
+      // 也不与转向叠加）。
+      if (state.kind === 'idle' || state.kind === 'walking') {
+        return { kind: 'running' }
+      }
+      return state
+    }
+
+    case 'RUN_END': {
+      // Task 11H：跑步结束回到待机（冷却由运行时从 RUN_END 起计时）。
+      if (state.kind === 'running') {
+        return { kind: 'idle' }
       }
       return state
     }
@@ -170,8 +213,14 @@ export function transition(state: PetState, event: PetEvent): PetState {
       // （拖动前已暂停则回到 paused，不会无条件进入 walking）。
       // Task 11G 例外：拖动取消休息——拖动前处于 sitting / lying 时，
       // 结束后回到 idle 而不是自动恢复休息（休息不跨拖动续期）。
+      // Task 11H 例外：拖动同样取消跑步——拖动前处于 running 时，
+      // 结束后回到 idle 而不是自动恢复跑步（跑步不跨拖动续期）。
       if (state.kind === 'dragging') {
-        if (state.restore.kind === 'sitting' || state.restore.kind === 'lying') {
+        if (
+          state.restore.kind === 'sitting' ||
+          state.restore.kind === 'lying' ||
+          state.restore.kind === 'running'
+        ) {
           return { kind: 'idle' }
         }
         return state.restore
@@ -184,6 +233,7 @@ export function transition(state: PetState, event: PetEvent): PetState {
         case 'idle':
         case 'walking':
         case 'turning':
+        case 'running':
         case 'sitting':
         case 'lying': {
           return { kind: 'paused', restore: state }
@@ -222,11 +272,12 @@ export function transition(state: PetState, event: PetEvent): PetState {
   }
 }
 
-/** 判断当前是否处于自动行为进行中（walking / turning / sitting / lying）。 */
+/** 判断当前是否处于自动行为进行中（walking / turning / running / sitting / lying）。 */
 export function isAutoActive(state: PetState): boolean {
   return (
     state.kind === 'walking' ||
     state.kind === 'turning' ||
+    state.kind === 'running' ||
     state.kind === 'sitting' ||
     state.kind === 'lying'
   )

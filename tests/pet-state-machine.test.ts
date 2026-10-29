@@ -326,3 +326,73 @@ describe('Task 11G：休息状态（sitting / lying）', () => {
     expect(state).toEqual({ kind: 'walking' })
   })
 })
+
+describe('Task 11H：跑步状态转换', () => {
+  it('行走 → 跑步（RUN_START 提速）', () => {
+    const state = run([{ type: 'WALK_START' }, { type: 'RUN_START' }])
+    expect(state).toEqual({ kind: 'running' })
+    expect(isAutoActive(state)).toBe(true)
+  })
+
+  it('待机 → 跑步（RUN_START 允许从 idle 直接进入）', () => {
+    const state = run([{ type: 'RUN_START' }])
+    expect(state).toEqual({ kind: 'running' })
+  })
+
+  it('跑步 → 待机（RUN_END）', () => {
+    const state = run([{ type: 'WALK_START' }, { type: 'RUN_START' }, { type: 'RUN_END' }])
+    expect(state).toEqual({ kind: 'idle' })
+  })
+
+  it.each(['sitting', 'lying', 'turning', 'paused', 'dragging'] as const)(
+    '%s 状态下 RUN_START 被忽略（不绕过休息退出保护，不与转向/暂停/拖动叠加）',
+    (kind) => {
+      const state: PetState =
+        kind === 'paused'
+          ? { kind: 'paused', restore: { kind: 'idle' } }
+          : kind === 'dragging'
+            ? { kind: 'dragging', restore: { kind: 'walking' } }
+            : ({ kind } as PetState)
+      expect(transition(state, { type: 'RUN_START' })).toBe(state)
+    }
+  )
+
+  it('跑步 → 转向（触界仍可转向）', () => {
+    const state = run([{ type: 'WALK_START' }, { type: 'RUN_START' }, { type: 'TURN_START' }])
+    expect(state).toEqual({ kind: 'turning' })
+  })
+
+  it('非 running 状态下 RUN_END 被忽略', () => {
+    expect(transition({ kind: 'walking' }, { type: 'RUN_END' })).toEqual({ kind: 'walking' })
+    expect(transition({ kind: 'idle' }, { type: 'RUN_END' })).toEqual({ kind: 'idle' })
+  })
+
+  it('跑步期间拖动：结束后取消跑步回到 idle（不自动恢复）', () => {
+    const state = run([
+      { type: 'WALK_START' },
+      { type: 'RUN_START' },
+      { type: 'DRAG_START' },
+      { type: 'DRAG_END' }
+    ])
+    expect(state).toEqual({ kind: 'idle' })
+  })
+
+  it('跑步期间暂停：记录 running，恢复后继续跑步', () => {
+    const state = run([{ type: 'WALK_START' }, { type: 'RUN_START' }, { type: 'PAUSE' }])
+    expect(state).toEqual({ kind: 'paused', restore: { kind: 'running' } })
+    expect(isPaused(state)).toBe(true)
+    expect(transition(state, { type: 'RESUME' })).toEqual({ kind: 'running' })
+  })
+
+  it('isAutoActive 覆盖跑步状态', () => {
+    expect(isAutoActive({ kind: 'running' })).toBe(true)
+  })
+
+  it('休息结束后不得直接跑步：REST_END → RUN_START 序列合法路径需经 idle', () => {
+    // REST_END 回 idle 后才允许 RUN_START（不允许 sitting → running 直跳）
+    const state = run([{ type: 'SIT_START' }, { type: 'REST_END' }])
+    expect(transition(state, { type: 'RUN_START' })).toEqual({ kind: 'running' })
+    const direct = transition({ kind: 'sitting' }, { type: 'RUN_START' })
+    expect(direct).toEqual({ kind: 'sitting' })
+  })
+})

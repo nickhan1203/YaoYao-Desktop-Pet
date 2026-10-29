@@ -2,7 +2,8 @@
  * 幺幺桌宠行走动画的纯逻辑层（可被 Vitest 直接测试，无 PixiJS/DOM 依赖）。
  *
  * 职责：
- * - 状态映射：主进程视觉状态 → 显示命令（idle 静态 / walk 循环动画）；
+ * - 状态映射：主进程视觉状态 → 显示命令（idle 静态 / walk 循环动画 /
+ *   run 循环动画，Task 11H）；
  * - 朝向镜像：以素材脚底参考点为翻转轴，保证镜像前后脚底目标位置稳定；
  * - 帧序列与播放速度换算；
  * - 素材加载结果解析（部分失败的安全降级语义）；
@@ -21,6 +22,14 @@ import walk05 from '../assets/pet/v2/walk/walk-05.png'
 import walk06 from '../assets/pet/v2/walk/walk-06.png'
 import walk07 from '../assets/pet/v2/walk/walk-07.png'
 import walk08 from '../assets/pet/v2/walk/walk-08.png'
+import run01 from '../assets/pet/v2/run/run-01.png'
+import run02 from '../assets/pet/v2/run/run-02.png'
+import run03 from '../assets/pet/v2/run/run-03.png'
+import run04 from '../assets/pet/v2/run/run-04.png'
+import run05 from '../assets/pet/v2/run/run-05.png'
+import run06 from '../assets/pet/v2/run/run-06.png'
+import run07 from '../assets/pet/v2/run/run-07.png'
+import run08 from '../assets/pet/v2/run/run-08.png'
 
 /**
  * v2 行走序列帧 URL（Task 11E-v2）。
@@ -41,6 +50,23 @@ export const WALK_FRAME_URLS: readonly string[] = [
 ]
 
 /**
+ * v2 跑步序列帧 URL（Task 11H）。
+ * 帧序与素材包 manifest.json 的 side-right/run 序列一致（run-01..08）；
+ * 仅接入 side-right 8 帧，朝左由渲染层容器镜像生成（与 walk 同一容器，
+ * 不额外创建第二套镜像逻辑）。
+ */
+export const RUN_FRAME_URLS: readonly string[] = [
+  run01,
+  run02,
+  run03,
+  run04,
+  run05,
+  run06,
+  run07,
+  run08
+]
+
+/**
  * 静止（idle/turning/paused/dragging）显示帧。
  * v2 素材包不含独立站立帧，walk-01 为近似站姿（仅前爪略前伸），
  * 与行走动画同风格同锚点，故兼作静止帧（与 walk 首帧共用同一 URL，
@@ -50,6 +76,9 @@ export const IDLE_FRAME_URL: string = walk01
 
 /** 行走动画目标帧率（帧/秒）：与素材包 manifest.json 的 walk fps=8 一致 */
 export const WALK_FPS = 8
+
+/** 跑步动画目标帧率（帧/秒）：与素材包 manifest.json 的 run fps=12 一致（Task 11H） */
+export const RUN_FPS = 12
 
 /** PixiJS Ticker 默认帧率（60fps 语义，用于换算 animationSpeed） */
 export const TICKER_FPS = 60
@@ -89,10 +118,14 @@ export function toAnimationSpeed(fps: number, tickerFps: number): number {
 
 /** 显示命令：角色容器的完整目标状态（由主进程视觉状态唯一决定） */
 export interface DisplayCommand {
-  /** true 显示行走动画；false 显示静态 idle */
+  /** true 显示行走动画；false 显示静态 idle 或跑步 */
   showWalk: boolean
   /** 行走动画是否播放（当前实现中与 showWalk 一致，保留语义位便于扩展） */
   walkPlaying: boolean
+  /** true 显示跑步动画（Task 11H）；素材缺失时由渲染层回退 walk 视觉 */
+  showRun: boolean
+  /** 跑步动画是否播放（当前实现中与 showRun 一致，保留语义位便于扩展） */
+  runPlaying: boolean
   /** 是否水平镜像（朝左） */
   mirrored: boolean
   /** 角色容器位置（显示画布坐标） */
@@ -109,6 +142,8 @@ export interface DisplayCommand {
  *
  * 状态映射（唯一行为依据）：
  * - walking → 循环播放 walk
+ * - running → 循环播放 run（Task 11H；run 素材整组加载失败时由
+ *   PetCanvas 回退播放 walk，本命令不感知素材可用性）
  * - idle / turning / paused / dragging → 静态 idle
  *
  * 朝向：所有素材默认朝右；facing left 时水平镜像，
@@ -122,6 +157,7 @@ export interface DisplayCommand {
  */
 export function resolveDisplayCommand(state: PetVisualState | null): DisplayCommand {
   const showWalk = state !== null && state.kind === 'walking'
+  const showRun = state !== null && state.kind === 'running'
   const mirrored = state !== null && state.facing === 'left'
   const positionX = mirrored
     ? FOOT_TARGET.x + CHARACTER_SCALE * FOOT_REFERENCE.x
@@ -130,6 +166,8 @@ export function resolveDisplayCommand(state: PetVisualState | null): DisplayComm
   return {
     showWalk,
     walkPlaying: showWalk,
+    showRun,
+    runPlaying: showRun,
     mirrored,
     positionX,
     positionY,
@@ -143,6 +181,8 @@ export function isSameCommand(a: DisplayCommand, b: DisplayCommand): boolean {
   return (
     a.showWalk === b.showWalk &&
     a.walkPlaying === b.walkPlaying &&
+    a.showRun === b.showRun &&
+    a.runPlaying === b.runPlaying &&
     a.mirrored === b.mirrored &&
     a.positionX === b.positionX &&
     a.positionY === b.positionY &&
@@ -177,6 +217,9 @@ export interface AssetLoadOutcome<T> {
   idle: T | null
   /** walk 全部帧（全部成功才有；任一帧失败则整组降级为静态 idle） */
   walk: readonly T[] | null
+  /** run 全部帧（Task 11H；全部成功才有；任一帧失败则整组为 null，
+   * 渲染层跑步状态回退播放 walk 动画） */
+  run: readonly T[] | null
   /** 失败资源的序号描述（供日志输出） */
   failures: string[]
 }
@@ -184,11 +227,14 @@ export interface AssetLoadOutcome<T> {
 /**
  * 解析 Promise.allSettled 的素材加载结果：
  * - walk 任一帧失败 → walk 整组为 null（安全降级，不部分播放）；
+ * - run 任一帧失败 → run 整组为 null（Task 11H，同 walk 的整组降级语义；
+ *   runResults 参数可省略，省略时 run 恒为 null——旧调用方兼容）；
  * - idle 失败 → idle 为 null（沿用占位圆形降级链）。
  */
 export function resolveAssetLoadOutcome<T>(
   idleResult: PromiseSettledResult<T>,
-  walkResults: readonly PromiseSettledResult<T>[]
+  walkResults: readonly PromiseSettledResult<T>[],
+  runResults?: readonly PromiseSettledResult<T>[]
 ): AssetLoadOutcome<T> {
   const failures: string[] = []
   const idle = idleResult.status === 'fulfilled' ? idleResult.value : null
@@ -205,9 +251,24 @@ export function resolveAssetLoadOutcome<T>(
       failures.push(`v2/walk/walk-0${index + 1}.png`)
     }
   })
+  const run: T[] = []
+  let runComplete = true
+  if (runResults !== undefined) {
+    runResults.forEach((result, index): void => {
+      if (result.status === 'fulfilled') {
+        run.push(result.value)
+      } else {
+        runComplete = false
+        failures.push(`v2/run/run-0${index + 1}.png`)
+      }
+    })
+  } else {
+    runComplete = false
+  }
   return {
     idle,
     walk: walkComplete ? walk : null,
+    run: runComplete && run.length > 0 ? run : null,
     failures
   }
 }
